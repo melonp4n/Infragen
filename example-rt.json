@@ -1,0 +1,543 @@
+{
+  "version": 1,
+  "accounts": [
+    {
+      "id": "acc_1",
+      "name": "AWS",
+      "provider": "aws",
+      "x": 574,
+      "y": 364,
+      "assets": [
+        {
+          "id": "asset_80a93a5e88e6adbd",
+          "code": "EC2",
+          "name": "Mythic C2",
+          "params": {
+            "ami": "ami-0c55b159cbfafe1f0",
+            "ansible": true,
+            "ansible_group": "c2",
+            "ansible_user": "ec2-user",
+            "associate_public_ip_address": false,
+            "instance_type": "t3.micro",
+            "metadata_options.http_tokens": "required",
+            "monitoring": false,
+            "root_block_device.encrypted": true,
+            "root_block_device.volume_size": 20,
+            "ssh_public_key": "",
+            "ssh_public_key_file": "",
+            "static_public_ip": false,
+            "user_data": ""
+          }
+        },
+        {
+          "id": "asset_dbd78c042a7ea42d",
+          "code": "EC2",
+          "name": "DNS Redirector",
+          "params": {
+            "ami": "ami-0c55b159cbfafe1f0",
+            "ansible": true,
+            "ansible_group": "dns_redirector",
+            "ansible_user": "ec2-user",
+            "associate_public_ip_address": false,
+            "instance_type": "t3.micro",
+            "metadata_options.http_tokens": "required",
+            "monitoring": false,
+            "root_block_device.encrypted": true,
+            "root_block_device.volume_size": 20,
+            "ssh_public_key": "",
+            "ssh_public_key_file": "",
+            "static_public_ip": false,
+            "user_data": ""
+          }
+        },
+        {
+          "id": "asset_598b9408ea91ae57",
+          "code": "EC2",
+          "name": "HTTPS Redirector",
+          "params": {
+            "ami": "ami-0c55b159cbfafe1f0",
+            "ansible": true,
+            "ansible_group": "https_redirector",
+            "ansible_user": "ec2-user",
+            "associate_public_ip_address": false,
+            "instance_type": "t3.micro",
+            "metadata_options.http_tokens": "required",
+            "monitoring": false,
+            "root_block_device.encrypted": true,
+            "root_block_device.volume_size": 20,
+            "ssh_public_key": "",
+            "ssh_public_key_file": "",
+            "static_public_ip": false,
+            "user_data": ""
+          }
+        },
+        {
+          "id": "asset_4f10c8e987dffb21",
+          "code": "CDN",
+          "name": "CloudFront CDN",
+          "params": {
+            "default_cache_behavior.default_ttl": 3600,
+            "default_cache_behavior.viewer_protocol_policy": "redirect-to-https",
+            "price_class": "PriceClass_100"
+          }
+        }
+      ]
+    },
+    {
+      "id": "acc_3",
+      "name": "DigitalOcean",
+      "provider": "digitalocean",
+      "x": 355,
+      "y": 137,
+      "assets": [
+        {
+          "id": "asset_7",
+          "code": "DRP",
+          "name": "Attack",
+          "params": {
+            "ansible": true,
+            "ansible_group": "attack",
+            "ansible_user": "root",
+            "backups": false,
+            "image": "ubuntu-24-04-x64",
+            "monitoring": true,
+            "region": "lon1",
+            "size": "s-1vcpu-1gb",
+            "ssh_public_key": "",
+            "ssh_public_key_file": "",
+            "user_data": ""
+          }
+        },
+        {
+          "id": "asset_4a5422bd5d3ad804",
+          "code": "DRP",
+          "name": "Payload Server",
+          "params": {
+            "ansible": true,
+            "ansible_group": "payload_server",
+            "ansible_user": "root",
+            "backups": false,
+            "image": "ubuntu-24-04-x64",
+            "monitoring": true,
+            "region": "lon1",
+            "size": "s-1vcpu-1gb",
+            "ssh_public_key": "",
+            "ssh_public_key_file": "",
+            "user_data": ""
+          }
+        },
+        {
+          "id": "asset_0e3b3dab4d9742c3",
+          "code": "DRP",
+          "name": "Payload Redirector",
+          "params": {
+            "ansible": true,
+            "ansible_group": "payload_redirector",
+            "ansible_user": "root",
+            "backups": false,
+            "image": "ubuntu-24-04-x64",
+            "monitoring": true,
+            "region": "lon1",
+            "size": "s-1vcpu-1gb",
+            "ssh_public_key": "",
+            "ssh_public_key_file": "",
+            "user_data": ""
+          }
+        },
+        {
+          "id": "asset_5a98f87419e7ccd8",
+          "code": "CDN",
+          "name": "CDN endpoint",
+          "params": {
+            "custom_domain": "",
+            "ttl": 3600
+          }
+        },
+        {
+          "id": "asset_15b66c7267ac91dd",
+          "code": "CDN",
+          "name": "CDN endpoint 2",
+          "params": {
+            "custom_domain": "",
+            "ttl": 3600
+          }
+        }
+      ]
+    },
+    {
+      "id": "acc_4",
+      "name": "Azure",
+      "provider": "azure",
+      "x": 1044,
+      "y": 545,
+      "assets": [
+        {
+          "id": "asset_2820f29520596035",
+          "code": "CDN",
+          "name": "Azure CDN",
+          "params": {
+            "is_http_allowed": false,
+            "is_https_allowed": true
+          }
+        }
+      ]
+    }
+  ],
+  "internet": {
+    "x": 1020,
+    "y": 40
+  },
+  "externalIps": [
+    {
+      "id": "extip_1",
+      "label": "Office jumphost",
+      "ip": "203.0.113.10/32",
+      "x": 137,
+      "y": 613
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn_8",
+      "a": {
+        "type": "extip",
+        "id": "extip_1"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_7"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "22",
+          "detail": "admin SSH access"
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_4ec823e8d0f445",
+      "a": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_dbd78c042a7ea42d"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_80a93a5e88e6adbd"
+      },
+      "aToB": [
+        {
+          "protocol": "UDP",
+          "port": "52",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_c8f8e0be723b44",
+      "a": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_598b9408ea91ae57"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_80a93a5e88e6adbd"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_638bb23acf164d",
+      "a": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_4f10c8e987dffb21"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_598b9408ea91ae57"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_4f33c4b0bd374b",
+      "a": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_80a93a5e88e6adbd"
+      },
+      "b": {
+        "type": "extip",
+        "id": "extip_1"
+      },
+      "aToB": [],
+      "bToA": [
+        {
+          "protocol": "TCP",
+          "port": "22",
+          "detail": ""
+        }
+      ]
+    },
+    {
+      "id": "conn_744801bf45ae47",
+      "a": {
+        "type": "extip",
+        "id": "extip_1"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_4a5422bd5d3ad804"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "22",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_f13a283903314c",
+      "a": {
+        "type": "extip",
+        "id": "extip_1"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_dbd78c042a7ea42d"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "22",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_e7a5b34f3cc047",
+      "a": {
+        "type": "extip",
+        "id": "extip_1"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_598b9408ea91ae57"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "22",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_12e2ca038e1446",
+      "a": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_0e3b3dab4d9742c3"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_4a5422bd5d3ad804"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_4d33e7c55dd343",
+      "a": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_5a98f87419e7ccd8"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_0e3b3dab4d9742c3"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_3ef402b2f9344f",
+      "a": {
+        "type": "internet"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_5a98f87419e7ccd8"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_76ead261d83d4d",
+      "a": {
+        "type": "internet"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_dbd78c042a7ea42d"
+      },
+      "aToB": [
+        {
+          "protocol": "UDP",
+          "port": "52",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_abe84c1ab97a4d",
+      "a": {
+        "type": "internet"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_4f10c8e987dffb21"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_50504c5f4be94c",
+      "a": {
+        "type": "asset",
+        "accountId": "acc_4",
+        "assetId": "asset_2820f29520596035"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_598b9408ea91ae57"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_a692935f0ab749",
+      "a": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_15b66c7267ac91dd"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_1",
+        "assetId": "asset_598b9408ea91ae57"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_d4390965db3440",
+      "a": {
+        "type": "internet"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_4",
+        "assetId": "asset_2820f29520596035"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    },
+    {
+      "id": "conn_a5e7330a952849",
+      "a": {
+        "type": "internet"
+      },
+      "b": {
+        "type": "asset",
+        "accountId": "acc_3",
+        "assetId": "asset_15b66c7267ac91dd"
+      },
+      "aToB": [
+        {
+          "protocol": "TCP",
+          "port": "443",
+          "detail": ""
+        }
+      ],
+      "bToA": []
+    }
+  ]
+}
