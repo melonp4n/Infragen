@@ -407,6 +407,184 @@ provider block, which is the natural fix. The generated file header should say s
 destroys what is in it. The warning surface must name the resource and say what will be lost; the
 existing `force_destroy` and `backups` params are the relevant context to show alongside.
 
+## User data
+
+A startup script on the four compute types. Each cloud spells it differently, and the differences are
+carried as catalog data rather than emitter branches:
+
+| Type | Argument | Wrap |
+|---|---|---|
+| `EC2`, `DRP` | `user_data` | — |
+| `GCE` | `metadata_startup_script` | — |
+| `VM` | `custom_data` | `base64encode(%s)` |
+
+Google's is a top-level argument, not an entry in the `metadata` map — the map would have needed
+special handling, the top-level one does not.
+
+**An unset script is omitted, not emitted as `""`.** `user_data = ""` is noise and
+`base64encode("")` is worse, so `assetResource` skips a `FieldScript` param whose value is empty.
+
+`quote()` escapes newlines to `\n`, because a literal newline inside an HCL quoted string is a parse
+error. `terraform validate` on a chart carrying scripts is what proves that, and a golden file would
+happily record broken output — so that check lives in the integration test.
+
+## Ansible inventory
+
+An asset with the Ansible directive on lands in an inventory, grouped by
+`ansible_group`. **The inventory is written by Terraform, not by infrachart** — it needs real
+addresses, and those do not exist until after apply, so it is a `local_file` whose content
+interpolates each host's address expression.
+
+```hcl
+resource "local_file" "ansible_inventory" {
+  filename        = "${path.cwd}/inventory.ini"
+  file_permission = "0600"
+  content         = <<-EOT
+    [web]
+    # AWS Account 1 → Web tier EC2
+    ${aws_eip.asset_3.public_ip} ansible_user=ec2-user
+    ...
+  EOT
+}
+```
+
+A `.gitignore` covering the inventory and the state file is emitted alongside.
+
+**It is a skeleton and says so.** `ansible_user` defaults to the login the provider's stock image
+creates (`ec2-user`, `azureuser`, `root`) and is editable per host.
+`ansible_ssh_private_key_file` is openly labelled a guess, since infrachart never sees the private
+key. Ansible configuration is the user's own.
+
+### Two things to preserve
+
+**Group names are validated as INI section names** (`groupName`). The group reaches a heredoc where
+`quote()` does not apply, so it is the injection surface. There are two independent layers:
+`Normalise` strips control characters from a text param, and the section-name check rejects
+brackets, spaces and `${`. Keep both — the first is incidental, the second is the deliberate one.
+
+**A host with no usable address is left out**, not written as a broken line. `ansibleWarnings` has
+already explained why for each one. That reuses `addressExpr`, the same code that decides whether a
+firewall rule can name a host — they are the same question.
+
+### Providers that come from features, not accounts
+
+`requiredProviders` walks accounts, but the inventory needs `hashicorp/local` and no account is a
+"local" account. `featureProviders` supplies those. The declaration and the resource are computed
+from the same source and asserted to agree, because a `local_file` with no provider declared — or a
+provider declared with nothing using it — are both broken.
+
+## SSH keys — and why nothing generates one
+
+**infrachart never creates an SSH keypair, and neither does the generated configuration.** A public
+key is something the user supplies; the private key never reaches the app, the configuration or the
+state file.
+
+That is a deliberate position, reached after ruling out the obvious alternative.
+
+### Ephemeral resources cannot supply a keypair
+
+`ephemeral "tls_private_key"` exists, and the idea is appealing: generate the key at plan time, keep
+the private half ephemeral so it never persists, use the public half. It does not work, for three
+independent reasons. Verified against Terraform 1.16 and the current providers, so this does not have
+to be rediscovered:
+
+1. **Ephemerality is per-resource, not per-attribute.** Everything an `ephemeral` block emits is
+   ephemeral. "Private ephemeral, public persisted" cannot be expressed.
+
+2. **Nothing can receive the public key.** Ephemeral values may only flow into *write-only*
+   attributes. Feeding one to `local_file.content`, or to a `data "tls_public_key"` argument to
+   launder it, both fail:
+
+   > Ephemeral values are not valid for "content", because it is not a write-only attribute and must
+   > be persisted to state.
+
+   A data source does not help — its results are persisted too. A sweep of all six providers found
+   write-only attributes on 26 resources, every one a secret *sink*: `password_wo`,
+   `secret_string_wo`, `private_key_wo` for certificates, `value_wo` for secret stores. **None on
+   `aws_key_pair`, `aws_instance`, or anything that installs a public key.**
+
+3. **The key differs on every run.** Ephemeral resources persist nothing — `terraform apply` leaves
+   `resources: []` — and are re-opened each operation. A keypair whose public half must stay
+   installed on a machine is the opposite of ephemeral.
+
+The underlying constraint: **something has to remember the private key between runs** — Terraform
+state, a file on disk, or the user. Ephemeral resources are built for values where the answer is
+"nobody", such as a fetched auth token passed to a provider block. A durable SSH identity is not
+that.
+
+So a generated keypair whose private half is actually usable must be persisted somewhere, and
+`tls_private_key` persists it in `terraform.tfstate` in plaintext. Rather than accept that, the key
+is the user's to create and supply.
+
+### How a key is resolved
+
+Four sources, first non-empty wins. The two per-resource ones are chart fields and resolve to
+literals; the two broader ones are Terraform variables, because infrachart cannot see their values.
+
+| Source | Emits |
+|---|---|
+| `ssh_public_key` on the asset — pasted | the literal string |
+| `ssh_public_key_file` on the asset — a path | `file("/path/to/key.pub")` |
+| `var.<account>_ssh_public_key` | the account default |
+| `var.ssh_public_key` | the deployment default |
+
+```hcl
+coalesce(file("/path/to/key.pub"), var.acc_1_ssh_public_key, var.ssh_public_key)
+```
+
+Only the sources actually set appear, so a host with no per-resource key emits just the two
+variables. Setting both per-resource fields is a warning rather than a silent precedence rule.
+
+**Every machine gets key wiring, whether or not Ansible is involved.** Wanting to SSH into a host is
+not the same want as wanting Ansible to configure it, and key wiring was originally gated on the
+Ansible flag — which made the first impossible without the second.
+
+The gate is now whether a key actually resolves, and that cannot be decided at generation time
+because a key may come from a Terraform variable. So it is decided at plan time:
+
+```hcl
+locals {
+  asset_3_ssh_key = coalesce(var.acc_1_ssh_public_key, var.ssh_public_key, "")
+}
+
+resource "aws_key_pair" "asset_3_key" {
+  count      = local.asset_3_ssh_key != "" ? 1 : 0
+  public_key = local.asset_3_ssh_key
+}
+
+resource "aws_instance" "asset_3" {
+  key_name = one(aws_key_pair.asset_3_key[*].key_name)
+}
+```
+
+Three things there are load-bearing:
+
+- **The trailing `""` in the coalesce.** Without it, `coalesce` fails when every source is empty. A
+  host with no key is a host nobody wants to SSH into, not an error.
+- **The local.** `count` and the value must read the same resolution, and repeating a
+  four-argument coalesce at every use would be a place for them to drift apart.
+- **`one(...)` rather than a direct reference.** A counted resource cannot be referenced directly,
+  and `one()` yields `null` when the count is zero — which is exactly "no key" for `key_name`.
+
+`Companion.Count` exists for this, and is the only place a count meta-argument is emitted.
+
+The key variables are declared wherever `{{sshkey}}` is **actually referenced** (`usesSSHKey`), never
+from a flag that usually implies it. That distinction was a real bug: declaring them from the Ansible
+flag left a plain Azure VM — which needs a key regardless — referencing variables that did not
+exist.
+
+| Provider | Wiring |
+|---|---|
+| AWS | `aws_key_pair` companion, `key_name` on the instance |
+| Azure | `admin_ssh_key.public_key`, unconditional |
+| GCP | `metadata = { ssh-keys = "ansible:<key>" }` |
+| DigitalOcean | `digitalocean_ssh_key` companion, `ssh_keys` |
+
+**A host with no key anywhere fails at plan time, not generation time.** infrachart cannot know
+whether `TF_VAR_ssh_public_key` is set, so a generation-time error would be a guess. A
+`lifecycle.precondition` on each Ansible host produces a better message anyway, because it names the
+asset and the command to run.
+
 ## Hard rules for the generator
 
 - **Run `model.Validate` then `model.Normalise` first.** Params become HCL argument values, and

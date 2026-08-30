@@ -87,6 +87,12 @@ func quote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	s = strings.ReplaceAll(s, "\t", `\t`)
+	// A literal newline inside a quoted string is a parse error, so scripts have to
+	// be escaped rather than embedded. Carriage returns go first, or a CRLF would
+	// come out as \r\\n.
+	s = strings.ReplaceAll(s, "\r\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\n`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
 	s = strings.ReplaceAll(s, "${", "$${")
 	s = strings.ReplaceAll(s, "%{", "%%{")
 	return `"` + s + `"`

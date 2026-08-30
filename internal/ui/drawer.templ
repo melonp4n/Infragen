@@ -163,6 +163,17 @@ templ paramField(f catalog.ParamField, value any) {
           <span class="switch-track"></span>
         </label>
       </div>
+    case catalog.FieldScript:
+      <div class="field-row">
+        <label class="field-label">{ f.Label } <code>{ f.Key }</code></label>
+        <textarea
+          data-param={ f.ParamKey() }
+          data-param-type={ f.Type }
+          rows="8"
+          spellcheck="false"
+          placeholder="#!/bin/bash"
+        >{ text(value) }</textarea>
+      </div>
     case catalog.FieldSelect:
       <div class="field-row">
         <label class="field-label">{ f.Label } <code>{ f.Key }</code></label>

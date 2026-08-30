@@ -63,6 +63,12 @@ nothing more, which is how fifteen invented parameters survived until someone ac
 - **Never emit a firewall rule for a `NetServiceEndpoint` asset.** S3, Lambda, Blob, Spaces and
   App Platform have no firewall — access is IAM-governed. A rule for them applies cleanly and
   controls nothing, which is worse than no output because it looks like the tool worked.
+- **Never generate an SSH key, in the app or in Terraform.** A public key is the user's to supply.
+  `tls_private_key` would put the private half in state in plaintext, and ephemeral resources cannot
+  substitute — see the ruled-out investigation in `TOFU-MAPPING.md` before proposing it again.
+- **Declare a Terraform variable from the reference, not from the flag that usually implies it.**
+  The SSH key variables were declared when Ansible was on, which left a plain Azure VM — which needs
+  a key regardless — referencing variables that did not exist.
 - **A blank port means unspecified, never "all ports".** Allowing everything is typed as `*`.
   Blank is fail-open: an abandoned half-written rule would open every port on the asset. It is
   accepted while editing so the drawer still renders, then refused at generation with a warning.

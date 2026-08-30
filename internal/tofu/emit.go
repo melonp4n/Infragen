@@ -18,7 +18,7 @@ func Generate(s model.Session) (string, []string) {
 	w := &writer{}
 
 	header(w)
-	requiredProviders(w, s)
+	requiredProviders(w, s, featureProviders(s))
 
 	// Rules are accumulated per account and rendered after the resources, because
 	// DigitalOcean needs all of an asset's rules in one resource.
@@ -41,6 +41,20 @@ func Generate(s model.Session) (string, []string) {
 
 	guarded := guardedAssets(report)
 	vars := newVarSet()
+	renderKeyLocals(w, s)
+	// The key variables exist only where something references them, so a chart
+	// with no SSH key wiring is not asked for a key it has no use for.
+	for _, acc := range s.Accounts {
+		for _, a := range acc.Assets {
+			rt, ok := catalog.Type(acc.Provider, a.Code)
+			if !ok || !usesSSHKey(rt, a) {
+				continue
+			}
+			for _, d := range sshKeyVars(acc.ID, acc.Name) {
+				vars.add(d)
+			}
+		}
+	}
 
 	for _, acc := range s.Accounts {
 		p, ok := catalog.Get(acc.Provider)
@@ -72,12 +86,18 @@ func Generate(s model.Session) (string, []string) {
 		}
 	}
 
+	if needsLocal := renderInventory(w, s); needsLocal != (len(featureProviders(s)) > 0) {
+		// A local_file with no provider declared, or the reverse. Both are broken,
+		// and they are computed from the same source so they cannot disagree.
+		panic("inventory and its provider requirement disagree")
+	}
+
 	vars.render(w)
 	externalIPs(w, s)
 	attachmentGaps(w, s, guarded)
 	notes(w, report)
 
-	return w.String(), report.Warnings()
+	return w.String(), append(report.Warnings(), ansibleWarnings(s, report)...)
 }
 
 func header(w *writer) {
@@ -103,7 +123,19 @@ func header(w *writer) {
 
 // requiredProviders declares only the providers the chart actually uses, so a
 // chart with no Azure in it does not demand Azure credentials.
-func requiredProviders(w *writer, s model.Session) {
+// featureProviders are providers a chart never mentions but a feature needs. The
+// inventory is a local_file, so an Ansible chart requires hashicorp/local even
+// though no account is a "local" account.
+func featureProviders(s model.Session) []catalog.Provider {
+	if groups, _ := inventory(s); len(groups) == 0 {
+		return nil
+	}
+	return []catalog.Provider{{
+		Key: "local", Label: "Local", TofuLocalName: "local", TofuSource: "hashicorp/local",
+	}}
+}
+
+func requiredProviders(w *writer, s model.Session, extra []catalog.Provider) {
 	inUse := map[string]bool{}
 	for _, acc := range s.Accounts {
 		inUse[acc.Provider] = true
@@ -116,6 +148,7 @@ func requiredProviders(w *writer, s model.Session) {
 			used = append(used, p)
 		}
 	}
+	used = append(used, extra...)
 	if len(used) == 0 {
 		return
 	}
@@ -135,18 +168,19 @@ func requiredProviders(w *writer, s model.Session) {
 func providerBlock(w *writer, p catalog.Provider, acc model.Account, vars *varSet) {
 	w.blank()
 	w.line("# Credentials come from the environment or your provider profile.")
+	ctx := exprCtx{accountID: acc.ID}
 	node := &blockNode{}
 	node.add("", "alias", quote(acc.ID))
 	for _, fx := range p.Config {
-		addFixed(node, fx, acc.ID, "")
+		addFixed(node, fx, ctx)
 	}
 	w.block(fmt.Sprintf("provider %q", p.TofuLocalName), func() { node.render(w) })
 	for _, v := range p.Variables {
 		vars.add(varDecl{
-			Name:        expand(v.Name, acc.ID, ""),
+			Name:        expand(v.Name, ctx),
 			Description: v.Description,
 			Type:        v.Type,
-			Default:     expand(v.Default, acc.ID, ""),
+			Default:     expand(v.Default, ctx),
 			Sensitive:   v.Sensitive,
 		})
 	}
@@ -265,6 +299,7 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 
 	// Arguments are collected by block path first, then rendered in one pass, so
 	// a nested argument does not have to know where it sits in the output.
+	ctx := assetCtx(acc, a)
 	root := &blockNode{}
 	root.add("", "provider", p.TofuLocalName+"."+acc.ID)
 	displayName(root, p, rt, a)
@@ -272,26 +307,41 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	// Arguments(), not Params: directives such as static_public_ip are not
 	// arguments on any resource and would make the configuration invalid.
 	for _, f := range rt.Arguments() {
-		root.add(f.Block, f.Key, value(a.Params[f.ParamKey()]))
+		v := a.Params[f.ParamKey()]
+		// An unwritten script is absence, not an empty script. Emitting it would
+		// produce user_data = "" and, worse, base64encode("") on Azure.
+		if f.Type == catalog.FieldScript && v == "" {
+			continue
+		}
+		root.add(f.Block, f.Key, wrapped(f, v))
 	}
 	for _, fx := range rt.Fixed {
-		addFixed(root, fx, acc.ID, a.ID)
+		if !required(fx.RequiresParam, a) {
+			continue
+		}
+		addFixed(root, fx, ctx)
 	}
 	// A companion the parent never references would be dead HCL.
 	for _, c := range rt.Companions {
-		if c.ParentRef != "" {
-			root.add("", c.ParentRef, expand(c.ParentExpr, acc.ID, a.ID))
+		if !required(c.RequiresParam, a) {
+			continue
 		}
+		if c.ParentRef != "" {
+			root.add("", c.ParentRef, expand(c.ParentExpr, ctx))
+		}
+	}
+	if ansibleOn(&a) {
+		keyPrecondition(root, acc.ID, &a)
 	}
 	if guarded {
 		attach(root, acc, a, rt)
 	}
 	for _, v := range rt.Variables {
 		vars.add(varDecl{
-			Name:        expand(v.Name, acc.ID, a.ID),
+			Name:        expand(v.Name, ctx),
 			Description: v.Description,
 			Type:        v.Type,
-			Default:     expand(v.Default, acc.ID, a.ID),
+			Default:     expand(v.Default, ctx),
 			Sensitive:   v.Sensitive,
 		})
 	}
@@ -301,6 +351,9 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	w.block(fmt.Sprintf("resource %q %q", rt.TofuType, a.ID), func() { root.render(w) })
 
 	for _, c := range rt.Companions {
+		if !required(c.RequiresParam, a) {
+			continue
+		}
 		companionResource(w, p, acc, a, c)
 	}
 	staticAddress(w, p, acc, a, rt)
@@ -311,14 +364,50 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 // moves a resource address.
 func companionResource(w *writer, p catalog.Provider, acc model.Account, a model.Asset, c catalog.Companion) {
 	name := a.ID + "_" + c.Suffix
+	ctx := assetCtx(acc, a)
 	node := &blockNode{}
+	// count first: it is a meta-argument and reads as one at the top of the block.
+	if c.Count != "" {
+		node.add("", "count", expand(c.Count, ctx))
+	}
 	node.add("", "provider", p.TofuLocalName+"."+acc.ID)
 	for _, fx := range c.Fixed {
-		addFixed(node, fx, acc.ID, a.ID)
+		addFixed(node, fx, ctx)
 	}
 	w.blank()
 	w.line("# %s requires this", a.Name)
 	w.block(fmt.Sprintf("resource %q %q", c.TofuType, name), func() { node.render(w) })
+}
+
+// assetCtx is what a catalog expression may refer to for one asset.
+func assetCtx(acc model.Account, a model.Asset) exprCtx {
+	return exprCtx{
+		accountID: acc.ID,
+		assetID:   a.ID,
+		sshKey:    sshKeyLocal(a.ID),
+		sshUser:   loginUser(&a),
+	}
+}
+
+// required reports whether a conditional Fixed or Companion applies. An empty
+// condition always applies; otherwise the named boolean directive must be on.
+func required(param string, a model.Asset) bool {
+	if param == "" {
+		return true
+	}
+	on, _ := a.Params[param].(bool)
+	return on
+}
+
+// wrapped renders a param value, applying the type's Wrap expression when it has
+// one. Azure's custom_data is the reason: it takes base64 where every other cloud
+// takes a plain string.
+func wrapped(f catalog.ParamField, v any) string {
+	rendered := value(v)
+	if f.Wrap == "" {
+		return rendered
+	}
+	return fmt.Sprintf(f.Wrap, rendered)
 }
 
 // guardedAssets is the set of assets that ended up with at least one firewall

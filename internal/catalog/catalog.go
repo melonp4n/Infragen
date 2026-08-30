@@ -13,6 +13,10 @@ const (
 	FieldNumber  = "number"
 	FieldSelect  = "select"
 	FieldBoolean = "boolean"
+	// FieldScript is a multi-line value: a startup script, not a name. It is the
+	// only field type permitted to contain newlines, and the only one rendered as
+	// a textarea.
+	FieldScript = "script"
 )
 
 // ParamField is one editable attribute of a resource, rendered as a form row and
@@ -36,6 +40,11 @@ type ParamField struct {
 	// Advanced hides the field behind the drawer's disclosure. Reserve the visible
 	// set for what someone picks when creating the asset.
 	Advanced bool `json:"advanced,omitempty"`
+
+	// Wrap wraps the rendered value in an HCL expression, given as a format string
+	// with one verb: "base64encode(%s)" for Azure's custom_data, which takes base64
+	// where the other clouds take a plain string. Empty emits the value as is.
+	Wrap string `json:"wrap,omitempty"`
 
 	// Directive marks a param that steers generation rather than naming an HCL
 	// argument. ParamStaticPublicIP is one: aws_instance has no such argument, so
@@ -62,6 +71,10 @@ type Fixed struct {
 	Key   string `json:"key"`
 	// Expr is rendered HCL, not a Go value: it may reference other resources.
 	Expr string `json:"expr"`
+	// RequiresParam emits this only when the named boolean directive is on for the
+	// asset. SSH key wiring uses it: a key pair is meaningless on a host nobody
+	// manages with Ansible.
+	RequiresParam string `json:"requiresParam,omitempty"`
 }
 
 // Variable is a value the chart cannot supply and the user must, such as an SSH
@@ -96,11 +109,57 @@ type Companion struct {
 	// ParentExpr is what to put there. Empty when nothing needs to reference it.
 	ParentRef  string `json:"parentRef,omitempty"`
 	ParentExpr string `json:"parentExpr,omitempty"`
+	// RequiresParam emits this companion, and its ParentRef, only when the named
+	// boolean directive is on for the asset.
+	RequiresParam string `json:"requiresParam,omitempty"`
+	// Count is an HCL count expression. It exists for wiring that depends on a
+	// value infrachart cannot see — an SSH key supplied as a Terraform variable —
+	// where the decision has to be made at plan time rather than generation time.
+	Count string `json:"count,omitempty"`
 }
 
 // ParamStaticPublicIP is the toggle that opts an asset into a durable address.
 // The catalog and the generator both need the key, so it is named once here.
 const ParamStaticPublicIP = "static_public_ip"
+
+// The Ansible directives. All steer generation and none is an argument on any
+// resource, so all are Directive.
+const (
+	ParamAnsible      = "ansible"
+	ParamAnsibleGroup = "ansible_group"
+	ParamAnsibleUser  = "ansible_user"
+	// Two ways to give a key per resource: paste it, or point at a file. Which one
+	// wins is not decided silently — setting both is a warning.
+	ParamSSHPublicKey     = "ssh_public_key"
+	ParamSSHPublicKeyFile = "ssh_public_key_file"
+)
+
+// SSHKeyParams returns the login and key fields every machine gets, whether or not
+// it is managed with Ansible.
+//
+// Separate from AnsibleToggles on purpose: wanting to SSH into a host is not the
+// same as wanting Ansible to configure it, and bundling the two made the first
+// impossible without the second.
+//
+// defaultUser is the login the provider's stock image creates. The pasted key is a
+// script field because an RSA public key runs past 700 characters — far beyond the
+// cap a name gets, and easier to paste into a textarea.
+func SSHKeyParams(defaultUser string) []ParamField {
+	return []ParamField{
+		{Key: ParamAnsibleUser, Label: "Login user", Type: FieldText, Default: defaultUser, Directive: true, Advanced: true},
+		{Key: ParamSSHPublicKey, Label: "SSH public key", Type: FieldScript, Default: "", Directive: true, Advanced: true},
+		{Key: ParamSSHPublicKeyFile, Label: "SSH public key file", Type: FieldText, Default: "", Directive: true, Advanced: true},
+	}
+}
+
+// AnsibleToggles returns the params that put an asset in an Ansible inventory.
+// Attach SSHKeyParams alongside these.
+func AnsibleToggles() []ParamField {
+	return []ParamField{
+		{Key: ParamAnsible, Label: "Manage with Ansible", Type: FieldBoolean, Default: false, Directive: true},
+		{Key: ParamAnsibleGroup, Label: "Ansible group", Type: FieldText, Default: "", Directive: true},
+	}
+}
 
 // StaticAddressToggle is the param to attach to any type carrying a StaticAddr.
 func StaticAddressToggle() ParamField {
@@ -271,4 +330,10 @@ func (r ResourceType) Arguments() []ParamField {
 		}
 	}
 	return out
+}
+
+// sshAndAnsible is the full set for a machine: key and login always, Ansible
+// group membership optionally.
+func sshAndAnsible(defaultUser string) []ParamField {
+	return append(SSHKeyParams(defaultUser), AnsibleToggles()...)
 }

@@ -170,6 +170,31 @@ Two invariants the rewrite must not break, both already covered by tests:
 - `internal/tofu` gets no new `switch` on a specific `TofuType`. If a type seems to need one, the
   catalog model is missing something.
 
+## Done — Ansible and user data
+
+Completed 2026-08-31. Plan: `~/.claude/plans/what-options-do-we-sequential-squid.md`.
+
+Adds a startup script to the four compute types, and an Ansible toggle that produces an inventory at
+apply time.
+
+| Step | State |
+|---|---|
+| 0. Document the ephemeral SSH key investigation | **done** |
+| 1. `FieldScript`, `ParamField.Wrap`, newline escaping, textarea | **done** |
+| 2. User data on `EC2`, `VM`, `GCE`, `DRP` | **done** |
+| 3. Ansible toggles, key resolution, warnings | **done** |
+| 4. Inventory, `.gitignore`, feature-driven provider requirements | **done** |
+
+The settled position worth not relitigating: **nothing generates an SSH key.** The reasoning, and
+the three experiments that ruled out ephemeral resources, are in `TOFU-MAPPING.md`.
+
+Two things to watch while building it:
+
+- **The inventory is written by Terraform, not by infrachart.** It needs real IPs, which do not exist
+  until after apply, so it is a `local_file` resource whose content interpolates address attributes.
+- **`quote()` does not escape newlines**, and a literal newline in an HCL string is a parse error.
+  Nothing hit that until user data, because validation rejected newlines everywhere.
+
 ## Resolved — the two deferred items
 
 Both are closed by the required-argument work, and both `ponytail:` markers are gone from the

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"infrachart/internal/catalog"
 	"infrachart/internal/model"
 )
 
@@ -103,5 +104,51 @@ func TestValidateReportsSuccess(t *testing.T) {
 	}
 	if !got.OK {
 		t.Fatalf("generated configuration failed validation:\n%s", got.Output)
+	}
+}
+
+// The regression the newline escaping exists for. A literal newline inside an HCL
+// quoted string is a parse error, and only the real tool proves the escaping is
+// right — a golden file would happily record broken output.
+func TestUserDataValidates(t *testing.T) {
+	script := "#!/bin/bash\nset -euo pipefail\n# a \"quoted\" ${thing} and a %{directive}\napt-get update\n"
+	s := model.Seed()
+	s.Accounts[0].Assets[2].Params["user_data"] = script   // AWS EC2
+	s.Accounts[2].Assets[0].Params["user_data"] = script   // DigitalOcean droplet
+	s.Accounts[3].Assets[0].Params["custom_data"] = script // Azure VM
+
+	hcl, _ := generate(t, s)
+	got := Validate(context.Background(), hcl)
+	if got.Tool == "" {
+		t.Skip("no tool installed")
+	}
+	if !got.OK {
+		t.Fatalf("a chart with startup scripts failed validation:\n%s", got.Output)
+	}
+}
+
+// A chart with Ansible hosts must validate: the key pair companions, the metadata
+// map on GCP, and the lifecycle preconditions are all new shapes that only the
+// real tool checks.
+func TestAnsibleChartValidates(t *testing.T) {
+	s := model.Seed()
+	for _, target := range []struct{ acc, asset int }{
+		{0, 2}, // AWS EC2
+		{2, 0}, // DigitalOcean droplet
+		{3, 0}, // Azure VM
+	} {
+		a := &s.Accounts[target.acc].Assets[target.asset]
+		a.Params[catalog.ParamAnsible] = true
+		a.Params[catalog.ParamAnsibleGroup] = "web"
+		a.Params[catalog.ParamStaticPublicIP] = true
+	}
+	hcl, _ := generate(t, s)
+
+	got := Validate(context.Background(), hcl)
+	if got.Tool == "" {
+		t.Skip("no tool installed")
+	}
+	if !got.OK {
+		t.Fatalf("an Ansible chart failed validation:\n%s", got.Output)
 	}
 }

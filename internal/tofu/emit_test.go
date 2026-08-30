@@ -385,3 +385,44 @@ func TestPortsAreDestinationOnly(t *testing.T) {
 		t.Error("Azure rule constrains the source port")
 	}
 }
+
+// A multi-line startup script must survive into valid HCL. This is the regression
+// the newline escaping exists for, and each provider spells the argument
+// differently — Azure additionally needs it base64-encoded.
+func TestUserDataPerProvider(t *testing.T) {
+	script := "#!/bin/bash\nset -euo pipefail\napt-get update\n"
+	s := model.Seed()
+	set := func(accIndex, assetIndex int, key string) {
+		s.Accounts[accIndex].Assets[assetIndex].Params[key] = script
+	}
+	set(0, 2, "user_data")   // AWS EC2
+	set(2, 0, "user_data")   // DigitalOcean droplet
+	set(3, 0, "custom_data") // Azure VM
+	hcl, _ := generate(t, s)
+
+	for _, want := range []string{
+		`user_data = "#!/bin/bash\nset -euo pipefail\napt-get update\n"`,
+		`custom_data = base64encode("#!/bin/bash\nset -euo pipefail\napt-get update\n")`,
+	} {
+		if !strings.Contains(collapse(hcl), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	// A literal newline in the output would be an HCL parse error.
+	for _, line := range strings.Split(hcl, "\n") {
+		if strings.Contains(line, "apt-get update") && !strings.Contains(line, `\n`) {
+			t.Errorf("script was embedded rather than escaped: %q", line)
+		}
+	}
+}
+
+// An unwritten script is absence, not an empty one — and base64encode("") is
+// worse than nothing.
+func TestEmptyScriptIsOmitted(t *testing.T) {
+	hcl, _ := generate(t, model.Seed())
+	for _, bad := range []string{`user_data = ""`, `base64encode("")`, `metadata_startup_script = ""`} {
+		if strings.Contains(collapse(hcl), bad) {
+			t.Errorf("emitted %s for an unset script", bad)
+		}
+	}
+}

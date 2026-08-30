@@ -168,3 +168,51 @@ func TestDrawerRendersDisclosure(t *testing.T) {
 		}
 	}
 }
+
+// A script needs a textarea; a single-line input would silently drop everything
+// after the first newline when the browser posted it back.
+func TestScriptFieldRendersATextarea(t *testing.T) {
+	t.Cleanup(func() { catalog.Unregister("scriptcloud") })
+	catalog.Register(catalog.Provider{
+		Key: "scriptcloud", Label: "ScriptCloud", Color: "#666666", Dim: "#222222",
+		TofuLocalName: "scriptcloud", TofuSource: "test/scriptcloud",
+		NameArg: "name",
+		Types: []catalog.ResourceType{{
+			Code: "SC", Name: "Script thing", TofuType: "scriptcloud_thing",
+			Network: catalog.NetFirewalled,
+			Params: []catalog.ParamField{
+				{Key: "user_data", Label: "Startup script", Type: catalog.FieldScript, Default: ""},
+			},
+		}},
+	})
+
+	s := model.Session{
+		Version: model.SchemaVersion,
+		Accounts: []model.Account{{
+			ID: "acc_s", Name: "Scripts", Provider: "scriptcloud",
+			Assets: []model.Asset{{
+				ID: "asset_s", Code: "SC", Name: "Thing",
+				Params: map[string]any{"user_data": "#!/bin/bash\necho hello\n"},
+			}},
+		}},
+	}
+	model.Normalise(&s)
+
+	var buf bytes.Buffer
+	sel := Selection{Kind: "asset", AccountID: "acc_s", AssetID: "asset_s"}
+	if err := Drawer(s, sel).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+
+	if !strings.Contains(got, `<textarea`) {
+		t.Error("script field did not render a textarea")
+	}
+	if !strings.Contains(got, `data-param="user_data"`) {
+		t.Error("textarea is not wired to the param")
+	}
+	// The whole script must be present, not just its first line.
+	if !strings.Contains(got, "echo hello") {
+		t.Errorf("script body was truncated:\n%s", got)
+	}
+}

@@ -20,16 +20,32 @@ const (
 	// DigitalOcean names, S3 bucket prefixes.
 	phAccountDashed = "{{account-dashed}}"
 	phAssetDashed   = "{{asset-dashed}}"
+	// The resolved SSH public key expression for this asset. Unlike the others it
+	// depends on the asset's own parameters, which is why expansion takes a
+	// context rather than two ids.
+	phSSHKey = "{{sshkey}}"
+	// The login the host expects, which is a chart value rather than a variable.
+	phSSHUser = "{{sshuser}}"
 )
 
+// exprCtx is what a catalog expression may refer to.
+type exprCtx struct {
+	accountID string
+	assetID   string
+	sshKey    string
+	sshUser   string
+}
+
 // expand substitutes the placeholders in a catalog expression.
-func expand(expr string, accountID, assetID string) string {
+func expand(expr string, c exprCtx) string {
 	return strings.NewReplacer(
-		phAccountDashed, dashed(accountID),
-		phAssetDashed, dashed(assetID),
-		phAccount, accountID,
-		phAsset, assetID,
-		phRegion, "var."+accountID+"_region",
+		phAccountDashed, dashed(c.accountID),
+		phAssetDashed, dashed(c.assetID),
+		phAccount, c.accountID,
+		phAsset, c.assetID,
+		phRegion, "var."+c.accountID+"_region",
+		phSSHKey, c.sshKey,
+		phSSHUser, c.sshUser,
 	).Replace(expr)
 }
 
@@ -160,10 +176,10 @@ func orDefault(v, fallback string) string {
 // addFixed places one catalog Fixed value onto a node. A Fixed with no Key
 // declares an empty block and nothing else — azurerm's `features {}` and a
 // function app's `site_config {}` are both required and both empty.
-func addFixed(n *blockNode, fx catalog.Fixed, accountID, assetID string) {
+func addFixed(n *blockNode, fx catalog.Fixed, c exprCtx) {
 	if fx.Key == "" {
 		n.ensure(fx.Block)
 		return
 	}
-	n.add(fx.Block, fx.Key, expand(fx.Expr, accountID, assetID))
+	n.add(fx.Block, fx.Key, expand(fx.Expr, c))
 }

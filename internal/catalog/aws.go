@@ -25,19 +25,31 @@ func init() {
 				Fixed: []Fixed{
 					{Key: "subnet_id", Expr: "aws_subnet.{{account}}.id"},
 				},
-				Params: []ParamField{
+				// Created only when a key resolves from somewhere — which may be a
+				// Terraform variable, so the decision belongs at plan time.
+				Companions: []Companion{{
+					TofuType: "aws_key_pair", Suffix: "key",
+					Count: `{{sshkey}} != "" ? 1 : 0`,
+					Fixed: []Fixed{
+						{Key: "key_name", Expr: `"{{asset-dashed}}"`},
+						{Key: "public_key", Expr: "{{sshkey}}"},
+					},
+					ParentRef:  "key_name",
+					ParentExpr: "one(aws_key_pair.{{asset}}_key[*].key_name)",
+				}},
+				Params: append([]ParamField{
 					StaticAddressToggle(),
 					{Key: "instance_type", Label: "Instance type", Type: FieldSelect, Options: []string{"t3.micro", "t3.small", "t3.medium", "m5.large", "c5.xlarge"}, Default: "t3.micro"},
 					{Key: "ami", Label: "AMI ID", Type: FieldText, Default: "ami-0c55b159cbfafe1f0"},
-					{Key: "key_name", Label: "Key pair", Type: FieldText, Default: "", Advanced: true},
 					{Key: "associate_public_ip_address", Label: "Assign public IP", Type: FieldBoolean, Default: false, Advanced: true},
 					{Key: "monitoring", Label: "Detailed monitoring", Type: FieldBoolean, Default: false, Advanced: true},
 					// IMDSv2. Requiring a token is what stops an SSRF bug reaching
 					// the instance credentials.
 					{Key: "http_tokens", Block: "metadata_options", Label: "IMDS tokens", Type: FieldSelect, Options: []string{"required", "optional"}, Default: "required", Advanced: true},
+					{Key: "user_data", Label: "Startup script", Type: FieldScript, Default: "", Advanced: true},
 					{Key: "volume_size", Block: "root_block_device", Label: "Root volume (GB)", Type: FieldNumber, Default: 20, Advanced: true},
 					{Key: "encrypted", Block: "root_block_device", Label: "Encrypt root volume", Type: FieldBoolean, Default: true, Advanced: true},
-				},
+				}, sshAndAnsible("ec2-user")...),
 			},
 			{
 				Code: codeLambda, Name: "Lambda", TofuType: "aws_lambda_function",

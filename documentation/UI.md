@@ -160,6 +160,12 @@ they share that directory.
 If neither `tofu` nor `terraform` is installed, the strip is red and says which to install — an
 empty red panel would look like a validation failure rather than a missing tool.
 
+## Script fields
+
+A `FieldScript` param renders as a monospace `<textarea>` rather than an input. Startup scripts are
+the only multi-line values in the model, and a single-line input would silently drop everything after
+the first newline when the browser posted it back.
+
 ## Pre-rendered chrome
 
 The add-account panel, the add-IP panel, the asset type menus (one per provider) and the

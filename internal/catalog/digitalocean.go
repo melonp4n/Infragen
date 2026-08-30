@@ -18,21 +18,27 @@ func init() {
 				Code: "DRP", Name: "Droplet", TofuType: "digitalocean_droplet",
 				Network: NetFirewalled, AddressAttr: "ipv4_address", AddressKind: AddrStaticIP,
 				Fixed: []Fixed{
-					// Key auth rather than a root password emailed in plain text.
-					{Key: "ssh_keys", Expr: "var.{{account}}_ssh_key_ids"},
 					{Key: "vpc_uuid", Expr: "digitalocean_vpc.{{account}}.id"},
 				},
-				Variables: []Variable{{
-					Name: "{{account}}_ssh_key_ids", Description: "DigitalOcean SSH key IDs or fingerprints",
-					Type: "list(string)", Default: "[]",
+				// Key auth rather than a root password emailed in plain text.
+				Companions: []Companion{{
+					TofuType: "digitalocean_ssh_key", Suffix: "key",
+					Count: `{{sshkey}} != "" ? 1 : 0`,
+					Fixed: []Fixed{
+						{Key: "name", Expr: `"{{asset-dashed}}"`},
+						{Key: "public_key", Expr: "{{sshkey}}"},
+					},
+					ParentRef:  "ssh_keys",
+					ParentExpr: "digitalocean_ssh_key.{{asset}}_key[*].id",
 				}},
-				Params: []ParamField{
+				Params: append([]ParamField{
 					{Key: "size", Label: "Droplet size", Type: FieldSelect, Options: []string{"s-1vcpu-1gb", "s-2vcpu-2gb", "s-4vcpu-8gb", "c-4"}, Default: "s-1vcpu-1gb"},
 					{Key: "image", Label: "Image", Type: FieldText, Default: "ubuntu-24-04-x64"},
 					{Key: "region", Label: "Region", Type: FieldSelect, Options: []string{"nyc1", "nyc3", "sfo3", "ams3", "lon1", "sgp1"}, Default: "lon1"},
+					{Key: "user_data", Label: "Startup script", Type: FieldScript, Default: "", Advanced: true},
 					{Key: "monitoring", Label: "Monitoring", Type: FieldBoolean, Default: true, Advanced: true},
 					{Key: "backups", Label: "Backups", Type: FieldBoolean, Default: false, Advanced: true},
-				},
+				}, sshAndAnsible("root")...),
 			},
 			{
 				Code: "APP", Name: "App platform", TofuType: "digitalocean_app",

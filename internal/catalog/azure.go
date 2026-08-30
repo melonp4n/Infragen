@@ -30,7 +30,7 @@ func init() {
 					// trap, not a choice.
 					{Key: "admin_username", Expr: `"azureuser"`},
 					{Block: "admin_ssh_key", Key: "username", Expr: `"azureuser"`},
-					{Block: "admin_ssh_key", Key: "public_key", Expr: "var.{{account}}_ssh_public_key"},
+					{Block: "admin_ssh_key", Key: "public_key", Expr: "{{sshkey}}"},
 				},
 				Companions: []Companion{{
 					TofuType: "azurerm_network_interface", Suffix: "nic",
@@ -45,22 +45,20 @@ func init() {
 					ParentRef:  "network_interface_ids",
 					ParentExpr: "[azurerm_network_interface.{{asset}}_nic.id]",
 				}},
-				Variables: []Variable{{
-					Name: "{{account}}_ssh_public_key", Description: "SSH public key for Linux virtual machines",
-					Sensitive: true,
-				}},
-				Params: []ParamField{
+				Params: append([]ParamField{
 					StaticAddressToggle(),
 					{Key: "size", Label: "VM size", Type: FieldSelect, Options: []string{"Standard_B1s", "Standard_B2s", "Standard_D2s_v5", "Standard_E4s_v5"}, Default: "Standard_B2s"},
 					// Password auth off by default: key auth is the Azure recommendation.
 					{Key: "disable_password_authentication", Label: "SSH key auth only", Type: FieldBoolean, Default: true, Advanced: true},
+					// Azure takes base64 here where every other cloud takes a plain string.
+					{Key: "custom_data", Label: "Startup script", Type: FieldScript, Default: "", Advanced: true, Wrap: "base64encode(%s)"},
 					{Key: "caching", Block: "os_disk", Label: "OS disk caching", Type: FieldSelect, Options: []string{"ReadWrite", "ReadOnly", "None"}, Default: "ReadWrite", Advanced: true},
 					{Key: "storage_account_type", Block: "os_disk", Label: "OS disk type", Type: FieldSelect, Options: []string{"Standard_LRS", "StandardSSD_LRS", "Premium_LRS"}, Default: "StandardSSD_LRS", Advanced: true},
 					{Key: "publisher", Block: "source_image_reference", Label: "Image publisher", Type: FieldText, Default: "Canonical", Advanced: true},
 					{Key: "offer", Block: "source_image_reference", Label: "Image offer", Type: FieldText, Default: "ubuntu-24_04-lts", Advanced: true},
 					{Key: "sku", Block: "source_image_reference", Label: "Image SKU", Type: FieldText, Default: "server", Advanced: true},
 					{Key: "version", Block: "source_image_reference", Label: "Image version", Type: FieldText, Default: "latest", Advanced: true},
-				},
+				}, sshAndAnsible("azureuser")...),
 			},
 			{
 				Code: "FN", Name: "Function app", TofuType: "azurerm_linux_function_app",

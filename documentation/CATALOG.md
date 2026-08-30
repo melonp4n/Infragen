@@ -31,6 +31,7 @@ type ParamField struct {
     Label     string
     Type      string
     Options   []string
+    Wrap      string    // wraps the value, e.g. "base64encode(%s)"
     Default   any       // for a security-relevant field, this IS the secure value
     Advanced  bool      // sits behind the drawer's disclosure
     Directive bool      // steers generation, never emitted as an argument
@@ -166,6 +167,22 @@ Rules to follow:
   test enforces this.
 - **`Fixed` is for structural arguments only**, never security. A security setting is an ordinary
   editable field whose `Default` is the secure value.
+- **Use `FieldScript` for anything multi-line**, and only for that. It is the one field type
+  permitted to contain newlines, renders as a textarea, and has a 16KB cap rather than the 200-char
+  one names get. A startup script in a `FieldText` would be silently truncated at the first newline
+  by `Normalise`.
+- **Use `Wrap` when the provider wants the value transformed.** `"base64encode(%s)"` on Azure's
+  `custom_data`, which takes base64 where the other clouds take a plain string. The alternative —
+  special-casing it in the emitter — is the per-type branch the catalog exists to avoid.
+- **Attach `SSHKeyParams` to every machine type, and `AnsibleToggles` only where Ansible applies.**
+  They are separate because SSH access and Ansible management are separate wants. Bundling them
+  once made it impossible to give a host a key without also declaring it Ansible-managed.
+- **Use `Companion.Count` when the decision depends on a value only Terraform can see.** An SSH key
+  may arrive as a variable, so whether to create a key pair is a plan-time question. Reference a
+  counted companion with `one(...)`, which yields null at count zero.
+- **Use `RequiresParam` for anything that only applies when a directive is on.** Both `Fixed` and
+  `Companion` carry it. SSH key wiring uses it: a key pair on a host nobody manages with Ansible is
+  meaningless. An empty `RequiresParam` always applies.
 - **Mark a field `Advanced: true`** when it is not one of the three or four things someone picks
   when creating the asset. Everything else lands behind the drawer's disclosure.
 - **Use `Companions` rather than special-casing the emitter.** `internal/tofu` must contain no
