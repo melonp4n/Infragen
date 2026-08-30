@@ -1,0 +1,118 @@
+package ui
+
+import (
+  "strconv"
+
+  "infrachart/internal/catalog"
+  "infrachart/internal/model"
+)
+
+// pos renders a canvas position as data attributes. app.js applies them on
+// insert, which keeps positioning in one place: the same code path that runs
+// during a drag.
+func pos(x, y float64) templ.Attributes {
+  return templ.Attributes{
+    "data-x": strconv.FormatFloat(x, 'f', -1, 64),
+    "data-y": strconv.FormatFloat(y, 'f', -1, 64),
+  }
+}
+
+// Canvas is the full chart body. Import re-renders this wholesale.
+templ Canvas(s model.Session) {
+  // The chart the browser will edit. Shipping it as JSON beside the markup means
+  // initial load and re-import share one path: replace the canvas, re-read this.
+  @templ.JSONScript("session-data", s)
+  <svg id="lines-svg"><g id="lines-layer"></g></svg>
+  @InternetNode(s.Internet)
+  for _, e := range s.ExternalIPs {
+    @ExtIPNode(e)
+  }
+  for _, acc := range s.Accounts {
+    @AccountCard(acc)
+  }
+}
+
+// InternetNode is the public network. Exactly one exists per session and it is
+// never deleted, only moved.
+templ InternetNode(p model.Point) {
+  <div class="internet-node" { pos(p.X, p.Y)... }>
+    <div class="internet-ring">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6">
+        <circle cx="12" cy="12" r="9.5"></circle>
+        <path d="M2.5 12h19M12 2.5c2.6 2.6 4 6 4 9.5s-1.4 6.9-4 9.5c-2.6-2.6-4-6-4-9.5s1.4-6.9 4-9.5z"></path>
+      </svg>
+    </div>
+    <div class="internet-label">INTERNET</div>
+    <div class="internet-sub">public network</div>
+    <div class="connector" data-node="internet" title="Click to start or finish a connection"></div>
+  </div>
+}
+
+// ExtIPNode is a hardcoded address such as a jump host. Nothing is deployed for
+// it — its CIDR is substituted directly into generated rules.
+templ ExtIPNode(e model.ExternalIP) {
+  <div class="extip-node" data-extip-id={ e.ID } { pos(e.X, e.Y)... }>
+    <div class="extip-box">
+      <div class="extip-close" title="Remove">✕</div>
+      <div class="extip-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6">
+          <rect x="3" y="3" width="18" height="18" rx="3"></rect>
+          <path d="M3 9h18M9 21V9"></path>
+        </svg>
+      </div>
+      <div class="extip-label">{ e.Label }</div>
+      <div class="extip-ip">{ e.IP }</div>
+    </div>
+    <div class="connector" data-node={ "extip:" + e.ID } title="Click to start or finish a connection"></div>
+  </div>
+}
+
+// AccountCard is a cloud account container. Its assets move with it.
+templ AccountCard(acc model.Account) {
+  <div class="account" data-account-id={ acc.ID } data-provider={ acc.Provider } { pos(acc.X, acc.Y)... }>
+    <div class="account-header">
+      <span class="account-dot"></span>
+      <span
+        class="account-name"
+        contenteditable="plaintext-only"
+        spellcheck="false"
+        role="textbox"
+        aria-label="Account name"
+        title="Click to rename"
+      >{ acc.Name }</span>
+      <span class="account-provider-tag">{ providerLabel(acc.Provider) }</span>
+      <span class="account-close" title="Remove account">✕</span>
+    </div>
+    <div class="account-body">
+      for _, a := range acc.Assets {
+        @AssetTile(acc.ID, acc.Provider, a)
+      }
+      <div class="add-tile" title="Add asset">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 5v14M5 12h14"></path>
+        </svg>
+      </div>
+    </div>
+  </div>
+}
+
+// AssetTile is one deployable resource. A single component covers every resource
+// type — the badge and the edit form both come from the catalog, so a new type
+// needs no new markup.
+templ AssetTile(accountID, provider string, a model.Asset) {
+  <div class="asset" data-account-id={ accountID } data-asset-id={ a.ID }>
+    <div class="asset-close" title="Remove asset">✕</div>
+    <div class="asset-badge">{ a.Code }</div>
+    <div class="asset-name">{ a.Name }</div>
+    <div class="connector" data-node={ "asset:" + accountID + ":" + a.ID } title="Click to start or finish a connection"></div>
+  </div>
+}
+
+// providerLabel is the display name for a provider key, e.g. "digitalocean" is
+// shown as "DigitalOcean".
+func providerLabel(key string) string {
+  if p, ok := catalog.Get(key); ok {
+    return p.Label
+  }
+  return key
+}

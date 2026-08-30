@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>IaC Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0A0D12;
+    --bg-grid-major: rgba(148,163,184,0.07);
+    --bg-grid-minor: rgba(148,163,184,0.035);
+    --panel:#12161D;
+    --panel-2:#171C24;
+    --border:#232B36;
+    --border-soft:#1B222C;
+    --text:#E7ECF3;
+    --text-dim:#8993A4;
+    --text-faint:#5B6472;
+    --accent:#59D9C7;
+    --accent-dim:#2C6F67;
+    --danger:#E8574B;
+    --danger-dim:#7A2E27;
+    --warning:#E3A73D;
+    --warning-dim:#4D3B1C;
+    --extip:#9C86E0;
+    --extip-dim:#332B57;
+    --aws:#E0A458;
+    --aws2:#B5773F;
+    --azure:#3A8FD9;
+    --do:#4361EE;
+    --gcp:#4EA699;
+    --radius:10px;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+    --sans:'IBM Plex Sans',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--sans);height:100%;overflow:hidden;}
+  #app{display:flex;flex-direction:column;height:100vh;width:100vw;}
+
+  .topbar{
+    display:flex;align-items:center;gap:14px;
+    padding:12px 18px;border-bottom:1px solid var(--border-soft);
+    background:var(--panel);flex-shrink:0;z-index:50;position:relative;
+  }
+  .brand{display:flex;align-items:center;gap:9px;margin-right:6px;}
+  .brand-mark{width:20px;height:20px;border:1.5px solid var(--accent);border-radius:4px;position:relative;flex-shrink:0;}
+  .brand-mark::before,.brand-mark::after{content:"";position:absolute;background:var(--accent);}
+  .brand-mark::before{width:1.5px;height:8px;top:3px;left:3px;}
+  .brand-mark::after{width:8px;height:1.5px;left:9px;top:9px;}
+  .brand-text{font-family:var(--mono);font-size:13px;letter-spacing:0.03em;color:var(--text);}
+  .brand-text b{color:var(--accent);font-weight:600;}
+
+  .toolbtn{
+    display:flex;align-items:center;gap:7px;
+    background:var(--panel-2);border:1px solid var(--border);color:var(--text);
+    font-family:var(--sans);font-size:13px;font-weight:500;
+    padding:7px 12px;border-radius:8px;cursor:pointer;transition:border-color .12s, background .12s;
+  }
+  .toolbtn:hover{border-color:#39424F;background:#1B212B;}
+  .toolbtn.primary{background:rgba(89,217,199,0.08);border-color:var(--accent-dim);color:var(--accent);}
+  .toolbtn.primary:hover{background:rgba(89,217,199,0.14);}
+  .toolbtn svg{width:14px;height:14px;flex-shrink:0;}
+  .spacer{flex:1;}
+  .legend{display:flex;align-items:center;gap:16px;font-size:11.5px;color:var(--text-faint);font-family:var(--mono);}
+  .legend-item{display:flex;align-items:center;gap:6px;}
+  .legend-line{width:16px;height:0;border-top:2px solid;}
+
+  .canvas-wrap{flex:1;position:relative;overflow:auto;background:var(--bg);}
+  .canvas{
+    position:relative;width:2200px;height:1500px;
+    background-image:
+      linear-gradient(var(--bg-grid-major) 1px, transparent 1px),
+      linear-gradient(90deg, var(--bg-grid-major) 1px, transparent 1px),
+      linear-gradient(var(--bg-grid-minor) 1px, transparent 1px),
+      linear-gradient(90deg, var(--bg-grid-minor) 1px, transparent 1px);
+    background-size:160px 160px,160px 160px,20px 20px,20px 20px;
+  }
+  svg#lines-svg{position:absolute;top:0;left:0;pointer-events:none;overflow:visible;}
+  svg#lines-svg path{pointer-events:stroke;cursor:pointer;}
+  svg#lines-svg .hitpath{stroke:transparent;stroke-width:16;fill:none;}
+
+  .account{
+    position:absolute;min-width:230px;
+    background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:0 6px 24px rgba(0,0,0,0.35);
+    user-select:none;
+  }
+  .account-header{
+    display:flex;align-items:center;gap:8px;padding:10px 12px;
+    border-bottom:1px solid var(--border-soft);cursor:grab;
+    border-radius:var(--radius) var(--radius) 0 0;
+  }
+  .account-header:active{cursor:grabbing;}
+  .account-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+  .account-name{font-weight:500;font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .account-provider-tag{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:0.04em;padding:2px 6px;border-radius:4px;
+    text-transform:uppercase;flex-shrink:0;
+  }
+  .account-close{
+    width:18px;height:18px;border-radius:4px;display:flex;align-items:center;justify-content:center;
+    color:var(--text-faint);cursor:pointer;flex-shrink:0;
+  }
+  .account-close:hover{background:rgba(232,87,75,0.15);color:var(--danger);}
+  .account-body{padding:12px;display:flex;flex-wrap:wrap;gap:8px;}
+
+  .asset{
+    position:relative;width:76px;
+    background:var(--panel-2);border:1px solid var(--border);border-radius:8px;
+    padding:8px 6px 14px;text-align:center;cursor:pointer;transition:border-color .12s;
+  }
+  .asset:hover{border-color:#39424F;}
+  .asset.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+  .asset-badge{
+    font-family:var(--mono);font-weight:600;font-size:12px;letter-spacing:0.02em;
+    width:32px;height:32px;margin:0 auto 5px;border-radius:6px;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .asset-name{font-size:10px;color:var(--text-dim);line-height:1.25;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+  .asset-close{
+    position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:3px;
+    display:none;align-items:center;justify-content:center;color:var(--text-faint);cursor:pointer;font-size:11px;line-height:1;
+  }
+  .asset:hover .asset-close{display:flex;}
+  .asset-close:hover{background:rgba(232,87,75,0.18);color:var(--danger);}
+  .connector{
+    position:absolute;left:50%;bottom:-6px;transform:translateX(-50%);
+    width:11px;height:11px;border-radius:50%;background:var(--panel-2);
+    border:2px solid var(--accent);cursor:crosshair;z-index:5;
+    transition:transform .1s, box-shadow .1s;
+  }
+  .connector:hover{transform:translateX(-50%) scale(1.35);box-shadow:0 0 0 4px rgba(89,217,199,0.18);}
+  .connector.connecting{background:var(--accent);box-shadow:0 0 0 4px rgba(89,217,199,0.28);}
+
+  .add-tile{
+    width:76px;height:59px;border-radius:8px;border:1px dashed var(--border);
+    display:flex;align-items:center;justify-content:center;color:var(--text-faint);
+    cursor:pointer;font-size:18px;position:relative;
+  }
+  .add-tile:hover{border-color:var(--accent-dim);color:var(--accent);background:rgba(89,217,199,0.05);}
+
+  .type-menu{
+    position:absolute;z-index:60;background:var(--panel-2);border:1px solid var(--border);
+    border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,0.5);padding:5px;min-width:170px;
+  }
+  .type-menu-item{
+    display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;
+  }
+  .type-menu-item:hover{background:rgba(255,255,255,0.05);}
+  .type-menu-code{
+    font-family:var(--mono);font-size:9.5px;font-weight:600;width:26px;height:20px;border-radius:4px;
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  }
+
+  .internet-node{
+    position:absolute;width:96px;text-align:center;cursor:grab;user-select:none;z-index:3;
+  }
+  .internet-node:active{cursor:grabbing;}
+  .internet-ring{
+    width:58px;height:58px;margin:0 auto 6px;border-radius:50%;
+    border:1.5px dashed var(--danger);position:relative;display:flex;align-items:center;justify-content:center;
+    background:rgba(232,87,75,0.06);
+  }
+  .internet-ring svg{width:26px;height:26px;stroke:var(--danger);}
+  .internet-label{font-family:var(--mono);font-size:11px;color:var(--danger);letter-spacing:0.03em;}
+  .internet-sub{font-size:9.5px;color:var(--text-faint);margin-top:1px;}
+
+  .extip-node{position:absolute;width:120px;user-select:none;z-index:3;}
+  .extip-box{
+    position:relative;background:var(--panel-2);border:1.5px dashed var(--extip);border-radius:8px;
+    padding:9px 8px;cursor:grab;text-align:center;
+  }
+  .extip-box:active{cursor:grabbing;}
+  .extip-node.selected .extip-box{border-style:solid;box-shadow:0 0 0 1px var(--extip);}
+  .extip-icon svg{width:16px;height:16px;stroke:var(--extip);display:block;margin:0 auto 5px;}
+  .extip-label{font-size:11px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .extip-ip{font-family:var(--mono);font-size:10px;color:var(--extip);margin-top:2px;}
+  .extip-close{
+    position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:3px;
+    display:none;align-items:center;justify-content:center;color:var(--text-faint);cursor:pointer;font-size:11px;line-height:1;
+  }
+  .extip-box:hover .extip-close{display:flex;}
+  .extip-close:hover{background:rgba(232,87,75,0.18);color:var(--danger);}
+
+  .add-account-panel, .add-extip-panel{
+    position:absolute;top:52px;left:18px;z-index:60;background:var(--panel-2);
+    border:1px solid var(--border);border-radius:10px;padding:14px;width:250px;
+    box-shadow:0 14px 36px rgba(0,0,0,0.5);
+  }
+  .add-account-panel label, .add-extip-panel label{display:block;font-size:11px;color:var(--text-dim);margin:0 0 5px;}
+  .add-account-panel input, .add-account-panel select, .add-extip-panel input, .add-extip-panel select{
+    width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
+    font-family:var(--sans);font-size:13px;padding:7px 9px;border-radius:6px;margin-bottom:12px;
+  }
+  .add-account-panel input:focus, .add-account-panel select:focus{outline:none;border-color:var(--accent-dim);}
+  .add-account-row{display:flex;gap:8px;}
+  .add-account-row .toolbtn{flex:1;justify-content:center;}
+
+  .drawer{
+    position:absolute;top:0;right:0;bottom:0;width:380px;
+    background:var(--panel);border-left:1px solid var(--border);
+    display:flex;flex-direction:column;z-index:40;
+    box-shadow:-12px 0 32px rgba(0,0,0,0.4);
+    transform:translateX(0);transition:transform .16s ease;
+  }
+  .drawer.hidden{transform:translateX(100%);pointer-events:none;}
+  .drawer-head{padding:16px 18px;border-bottom:1px solid var(--border-soft);}
+  .drawer-title{display:flex;align-items:center;gap:8px;font-size:13px;font-family:var(--mono);flex-wrap:wrap;}
+  .drawer-title .arrow{color:var(--text-faint);}
+  .drawer-flag{margin-top:8px;display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 8px;border-radius:5px;font-family:var(--mono);}
+  .drawer-body{flex:1;overflow-y:auto;padding:16px 18px;}
+  .rule-section{margin-bottom:22px;}
+  .rule-section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;}
+  .rule-section-title{font-size:11.5px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:var(--text-dim);}
+  .rule-section-title.rst-danger{color:var(--danger);}
+  .rule-section-title.rst-warning{color:var(--warning);}
+  .rule-section-sub{font-size:11px;color:var(--text-faint);margin:-5px 0 9px;font-family:var(--mono);}
+  .rule-row{
+    display:grid;grid-template-columns:64px 76px 1fr 20px;gap:6px;margin-bottom:6px;align-items:center;
+  }
+  .rule-row select, .rule-row input{
+    background:var(--panel-2);border:1px solid var(--border);color:var(--text);
+    font-family:var(--mono);font-size:11px;padding:6px 5px;border-radius:5px;width:100%;
+  }
+  .rule-row select:focus, .rule-row input:focus{outline:none;border-color:var(--accent-dim);}
+  .rule-row input::placeholder{color:var(--text-faint);}
+  .rule-del{width:20px;height:20px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);cursor:pointer;border-radius:4px;font-size:13px;}
+  .rule-del:hover{background:rgba(232,87,75,0.15);color:var(--danger);}
+  .rule-empty{font-size:11.5px;color:var(--text-faint);padding:8px 0;font-style:italic;}
+  .rule-add{
+    display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--accent);cursor:pointer;
+    margin-top:4px;width:fit-content;
+  }
+  .rule-add:hover{opacity:0.8;}
+  .rule-col-labels{display:grid;grid-template-columns:64px 76px 1fr 20px;gap:6px;margin-bottom:5px;}
+  .rule-col-labels span{font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.04em;}
+
+  .field-row{margin-bottom:14px;}
+  .field-label{display:block;font-size:11.5px;color:var(--text-dim);margin-bottom:6px;}
+  .field-label code{font-family:var(--mono);font-size:10.5px;color:var(--text-faint);}
+  .field-row input[type="text"], .field-row input[type="number"], .field-row select{
+    width:100%;background:var(--panel-2);border:1px solid var(--border);color:var(--text);
+    font-family:var(--mono);font-size:12.5px;padding:8px 9px;border-radius:6px;
+  }
+  .field-row input:focus, .field-row select:focus{outline:none;border-color:var(--accent-dim);}
+  .field-toggle{display:flex;align-items:center;justify-content:space-between;}
+  .switch{position:relative;width:34px;height:19px;flex-shrink:0;}
+  .switch input{opacity:0;width:0;height:0;}
+  .switch-track{position:absolute;inset:0;background:var(--border);border-radius:20px;cursor:pointer;transition:background .12s;}
+  .switch-track::before{content:"";position:absolute;width:14px;height:14px;left:2.5px;top:2.5px;background:var(--text-dim);border-radius:50%;transition:transform .12s;}
+  .switch input:checked + .switch-track{background:var(--accent-dim);}
+  .switch input:checked + .switch-track::before{transform:translateX(15px);background:var(--accent);}
+  .asset-name-field{margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--border-soft);}
+  .note-box{
+    background:var(--extip-dim);border:1px dashed var(--extip);border-radius:8px;
+    padding:10px 11px;font-size:11.5px;line-height:1.5;color:var(--text-dim);
+  }
+
+  .drawer-foot{padding:14px 18px;border-top:1px solid var(--border-soft);display:flex;gap:8px;}
+  .drawer-foot .toolbtn{flex:1;justify-content:center;}
+  .btn-danger{color:var(--danger)!important;border-color:var(--danger-dim)!important;}
+  .btn-danger:hover{background:rgba(232,87,75,0.1)!important;}
+
+  .modal-backdrop{
+    position:absolute;inset:0;background:rgba(4,6,9,0.6);z-index:70;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .modal{
+    width:640px;max-height:80vh;background:var(--panel);border:1px solid var(--border);
+    border-radius:12px;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,0.55);
+  }
+  .modal-head{padding:14px 18px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;justify-content:space-between;}
+  .modal-head-title{font-family:var(--mono);font-size:13px;color:var(--text);}
+  .modal-close{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);cursor:pointer;}
+  .modal-close:hover{background:rgba(255,255,255,0.06);color:var(--text);}
+  .modal-body{padding:0;overflow-y:auto;}
+  .modal-body pre{
+    margin:0;padding:16px 18px;font-family:var(--mono);font-size:11.5px;line-height:1.65;color:#B7E8DE;
+    white-space:pre-wrap;word-break:break-word;
+  }
+  .hidden{display:none!important;}
+
+  ::-webkit-scrollbar{width:10px;height:10px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:#232B36;border-radius:10px;border:2px solid var(--bg);}
+  .canvas-wrap::-webkit-scrollbar-thumb{border-color:var(--bg);}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-text"><b>infra</b>graph</div>
+    </div>
+
+    <div class="toolbtn primary" id="btn-add-account">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+      Add account
+    </div>
+
+    <div class="toolbtn" id="btn-add-extip">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h6M7 13h4"/></svg>
+      Add IP address
+    </div>
+
+    <div class="toolbtn" id="btn-generate">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h5"/></svg>
+      Generate config
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="legend">
+      <div class="legend-item"><span class="legend-line" style="border-color:var(--accent);"></span>internal</div>
+      <div class="legend-item"><span class="legend-line" style="border-color:var(--danger);"></span>internet ingress</div>
+      <div class="legend-item"><span class="legend-line" style="border-color:var(--warning);border-top-style:dashed;"></span>internet egress only</div>
+      <div class="legend-item"><span class="legend-line" style="border-color:var(--extip);"></span>hardcoded IP (not deployed)</div>
+      <div class="legend-item">click a line or a node to edit</div>
+    </div>
+  </div>
+
+  <div class="canvas-wrap" id="canvas-wrap">
+    <div class="canvas" id="canvas">
+      <svg id="lines-svg"><g id="lines-layer"></g></svg>
+    </div>
+  </div>
+
+  <aside class="drawer hidden" id="drawer">
+    <div class="drawer-head">
+      <div class="drawer-title" id="drawer-title"></div>
+      <div class="drawer-flag" id="drawer-flag"></div>
+    </div>
+    <div class="drawer-body">
+      <div id="conn-panel">
+        <div class="rule-section">
+          <div class="rule-section-head">
+            <div class="rule-section-title" id="atob-title">A \u2192 B</div>
+          </div>
+          <div class="rule-section-sub" id="atob-sub"></div>
+          <div class="rule-col-labels"><span>Proto</span><span>Port</span><span>Note</span><span></span></div>
+          <div id="atob-rows"></div>
+          <div class="rule-add" data-dir="atob"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>Add allowed traffic</div>
+        </div>
+        <div class="rule-section">
+          <div class="rule-section-head">
+            <div class="rule-section-title" id="btoa-title">B \u2192 A</div>
+          </div>
+          <div class="rule-section-sub" id="btoa-sub"></div>
+          <div class="rule-col-labels"><span>Proto</span><span>Port</span><span>Note</span><span></span></div>
+          <div id="btoa-rows"></div>
+          <div class="rule-add" data-dir="btoa"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>Add allowed traffic</div>
+        </div>
+      </div>
+      <div id="asset-panel" class="hidden">
+        <div class="rule-section-title" id="asset-resource-type" style="margin-bottom:12px;"></div>
+        <div id="asset-fields"></div>
+      </div>
+      <div id="extip-panel" class="hidden">
+        <div class="note-box">This is a hardcoded external address, such as a jump host or an allowlisted partner IP. OpenTofu will not create it \u2014 connections to and from it use the IP directly in generated rules.</div>
+        <div class="field-row" style="margin-top:16px;">
+          <label class="field-label">Label</label>
+          <input type="text" id="extip-label-input">
+        </div>
+        <div class="field-row">
+          <label class="field-label">IP address <code>(CIDR accepted, e.g. /32)</code></label>
+          <input type="text" id="extip-ip-input">
+        </div>
+      </div>
+    </div>
+    <div class="drawer-foot">
+      <div class="toolbtn btn-danger" id="btn-delete-item">Delete</div>
+      <div class="toolbtn primary" id="btn-close-drawer">Close</div>
+    </div>
+  </aside>
+
+</div>
+
+<script>
+(function(){
+
+var PROVIDERS = {
+  aws:{label:'AWS', color:'#E0A458', dim:'#4A3C29', types:[
+    {code:'EC2',name:'EC2 instance'},{code:'\u03BB',name:'Lambda'},{code:'RDS',name:'RDS database'},
+    {code:'S3',name:'S3 bucket'},{code:'ALB',name:'Load balancer'},{code:'ECS',name:'ECS service'},
+    {code:'CDN',name:'CloudFront CDN'}]},
+  azure:{label:'Azure', color:'#3A8FD9', dim:'#233F52', types:[
+    {code:'VM',name:'Virtual machine'},{code:'FN',name:'Function app'},{code:'BLB',name:'Blob storage'},
+    {code:'SQL',name:'SQL database'},{code:'AKS',name:'AKS cluster'},{code:'APG',name:'App gateway'},
+    {code:'CDN',name:'Azure CDN'}]},
+  digitalocean:{label:'DigitalOcean', color:'#4361EE', dim:'#26305C', types:[
+    {code:'DRP',name:'Droplet'},{code:'APP',name:'App platform'},{code:'SPC',name:'Spaces bucket'},
+    {code:'DB',name:'Managed DB'},{code:'K8S',name:'Kubernetes'},{code:'LB',name:'Load balancer'},
+    {code:'CDN',name:'CDN endpoint'}]},
+  gcp:{label:'GCP', color:'#4EA699', dim:'#274641', types:[
+    {code:'GCE',name:'Compute engine'},{code:'GCF',name:'Cloud function'},{code:'GCS',name:'Cloud storage'},
+    {code:'CSQL',name:'Cloud SQL'},{code:'GKE',name:'GKE cluster'},{code:'CDN',name:'Cloud CDN'}]}
+};
+
+var PARAM_SCHEMAS = {
+  aws:{
+    EC2:[
+      {key:'instance_type',label:'Instance type',type:'select',options:['t3.micro','t3.small','t3.medium','m5.large','c5.xlarge'],default:'t3.micro'},
+      {key:'ami',label:'AMI ID',type:'text',default:'ami-0c55b159cbfafe1f0'},
+      {key:'key_name',label:'Key pair',type:'text',default:''},
+      {key:'root_volume_gb',label:'Root volume (GB)',type:'number',default:20},
+      {key:'associate_public_ip_address',label:'Assign public IP',type:'boolean',default:false}],
+    '\u03BB':[
+      {key:'runtime',label:'Runtime',type:'select',options:['nodejs20.x','python3.12','go1.x','java21','provided.al2023'],default:'nodejs20.x'},
+      {key:'handler',label:'Handler',type:'text',default:'index.handler'},
+      {key:'memory_size',label:'Memory (MB)',type:'number',default:128},
+      {key:'timeout',label:'Timeout (s)',type:'number',default:3}],
+    RDS:[
+      {key:'engine',label:'Engine',type:'select',options:['postgres','mysql','mariadb','sqlserver-ex'],default:'postgres'},
+      {key:'engine_version',label:'Engine version',type:'text',default:'16.3'},
+      {key:'instance_class',label:'Instance class',type:'select',options:['db.t3.micro','db.t3.medium','db.r6g.large'],default:'db.t3.micro'},
+      {key:'allocated_storage',label:'Allocated storage (GB)',type:'number',default:20},
+      {key:'multi_az',label:'Multi-AZ',type:'boolean',default:false},
+      {key:'publicly_accessible',label:'Publicly accessible',type:'boolean',default:false}],
+    S3:[
+      {key:'bucket',label:'Bucket name',type:'text',default:''},
+      {key:'versioning_enabled',label:'Versioning',type:'boolean',default:false},
+      {key:'force_destroy',label:'Force destroy',type:'boolean',default:false}],
+    ALB:[
+      {key:'internal',label:'Internal only',type:'boolean',default:false},
+      {key:'load_balancer_type',label:'Type',type:'select',options:['application','network'],default:'application'}],
+    ECS:[
+      {key:'launch_type',label:'Launch type',type:'select',options:['FARGATE','EC2'],default:'FARGATE'},
+      {key:'desired_count',label:'Desired count',type:'number',default:1},
+      {key:'cpu',label:'CPU units',type:'number',default:256},
+      {key:'memory',label:'Memory (MB)',type:'number',default:512}],
+    CDN:[
+      {key:'price_class',label:'Price class',type:'select',options:['PriceClass_All','PriceClass_200','PriceClass_100'],default:'PriceClass_100'},
+      {key:'default_ttl',label:'Default TTL (s)',type:'number',default:3600},
+      {key:'viewer_protocol_policy',label:'Viewer protocol policy',type:'select',options:['redirect-to-https','allow-all','https-only'],default:'redirect-to-https'}]
+  },
+  azure:{
+    VM:[
+      {key:'size',label:'VM size',type:'select',options:['Standard_B1s','Standard_B2s','Standard_D2s_v5','Standard_E4s_v5'],default:'Standard_B2s'},
+      {key:'admin_username',label:'Admin username',type:'text',default:'azureuser'},
+      {key:'os_disk_type',label:'OS disk type',type:'select',options:['Standard_LRS','StandardSSD_LRS','Premium_LRS'],default:'StandardSSD_LRS'}],
+    FN:[
+      {key:'runtime',label:'Runtime',type:'select',options:['node','python','dotnet','java'],default:'node'},
+      {key:'os_type',label:'OS type',type:'select',options:['Linux','Windows'],default:'Linux'},
+      {key:'always_on',label:'Always on',type:'boolean',default:true}],
+    BLB:[
+      {key:'account_tier',label:'Account tier',type:'select',options:['Standard','Premium'],default:'Standard'},
+      {key:'replication_type',label:'Replication',type:'select',options:['LRS','GRS','ZRS','RAGRS'],default:'LRS'},
+      {key:'https_traffic_only',label:'HTTPS only',type:'boolean',default:true}],
+    SQL:[
+      {key:'sku_name',label:'SKU',type:'select',options:['Basic','S0','S1','GP_Gen5_2'],default:'S0'},
+      {key:'max_size_gb',label:'Max size (GB)',type:'number',default:32},
+      {key:'zone_redundant',label:'Zone redundant',type:'boolean',default:false}],
+    AKS:[
+      {key:'node_count',label:'Node count',type:'number',default:3},
+      {key:'vm_size',label:'Node VM size',type:'select',options:['Standard_DS2_v2','Standard_D4s_v5'],default:'Standard_DS2_v2'},
+      {key:'kubernetes_version',label:'K8s version',type:'text',default:'1.29'}],
+    APG:[
+      {key:'sku_name',label:'SKU',type:'select',options:['Standard_v2','WAF_v2'],default:'Standard_v2'},
+      {key:'capacity',label:'Capacity units',type:'number',default:2}],
+    CDN:[
+      {key:'origin_host_header',label:'Origin host header',type:'text',default:''},
+      {key:'compression_enabled',label:'Compression',type:'boolean',default:true},
+      {key:'querystring_caching',label:'Query string caching',type:'select',options:['IgnoreQueryString','UseQueryString','BypassCaching'],default:'IgnoreQueryString'}]
+  },
+  digitalocean:{
+    DRP:[
+      {key:'size',label:'Droplet size',type:'select',options:['s-1vcpu-1gb','s-2vcpu-2gb','s-4vcpu-8gb','c-4'],default:'s-1vcpu-1gb'},
+      {key:'image',label:'Image',type:'text',default:'ubuntu-24-04-x64'},
+      {key:'region',label:'Region',type:'select',options:['nyc1','nyc3','sfo3','ams3','sgp1'],default:'nyc3'},
+      {key:'backups',label:'Backups',type:'boolean',default:false},
+      {key:'monitoring',label:'Monitoring',type:'boolean',default:true}],
+    APP:[
+      {key:'instance_size_slug',label:'Instance size',type:'select',options:['basic-xxs','basic-xs','professional-xs'],default:'basic-xxs'},
+      {key:'instance_count',label:'Instance count',type:'number',default:1}],
+    SPC:[
+      {key:'region',label:'Region',type:'select',options:['nyc3','ams3','sgp1','fra1'],default:'nyc3'},
+      {key:'acl',label:'ACL',type:'select',options:['private','public-read'],default:'private'}],
+    DB:[
+      {key:'engine',label:'Engine',type:'select',options:['pg','mysql','redis','mongodb'],default:'pg'},
+      {key:'size',label:'Node size',type:'select',options:['db-s-1vcpu-1gb','db-s-2vcpu-4gb'],default:'db-s-1vcpu-1gb'},
+      {key:'node_count',label:'Node count',type:'number',default:1},
+      {key:'region',label:'Region',type:'select',options:['nyc3','sfo3','fra1'],default:'nyc3'}],
+    K8S:[
+      {key:'version',label:'K8s version',type:'text',default:'1.30.2-do.0'},
+      {key:'node_count',label:'Node count',type:'number',default:3},
+      {key:'node_size',label:'Node size',type:'select',options:['s-2vcpu-4gb','s-4vcpu-8gb'],default:'s-2vcpu-4gb'}],
+    LB:[
+      {key:'algorithm',label:'Algorithm',type:'select',options:['round_robin','least_connections'],default:'round_robin'},
+      {key:'size',label:'Size',type:'select',options:['lb-small','lb-medium','lb-large'],default:'lb-small'}],
+    CDN:[
+      {key:'ttl',label:'TTL (s)',type:'number',default:3600},
+      {key:'custom_domain',label:'Custom domain',type:'text',default:''}]
+  },
+  gcp:{
+    GCE:[
+      {key:'machine_type',label:'Machine type',type:'select',options:['e2-micro','e2-medium','n2-standard-2','c2-standard-4'],default:'e2-medium'},
+      {key:'zone',label:'Zone',type:'text',default:'us-central1-a'},
+      {key:'boot_disk_gb',label:'Boot disk (GB)',type:'number',default:10}],
+    GCF:[
+      {key:'runtime',label:'Runtime',type:'select',options:['nodejs20','python312','go122'],default:'nodejs20'},
+      {key:'memory_mb',label:'Memory (MB)',type:'number',default:256},
+      {key:'entry_point',label:'Entry point',type:'text',default:'handler'}],
+    GCS:[
+      {key:'location',label:'Location',type:'text',default:'US'},
+      {key:'storage_class',label:'Storage class',type:'select',options:['STANDARD','NEARLINE','COLDLINE','ARCHIVE'],default:'STANDARD'},
+      {key:'force_destroy',label:'Force destroy',type:'boolean',default:false}],
+    CSQL:[
+      {key:'database_version',label:'DB version',type:'select',options:['POSTGRES_16','MYSQL_8_0'],default:'POSTGRES_16'},
+      {key:'tier',label:'Tier',type:'select',options:['db-f1-micro','db-custom-2-7680'],default:'db-f1-micro'},
+      {key:'availability_type',label:'Availability',type:'select',options:['ZONAL','REGIONAL'],default:'ZONAL'}],
+    GKE:[
+      {key:'node_count',label:'Node count',type:'number',default:3},
+      {key:'machine_type',label:'Machine type',type:'select',options:['e2-medium','e2-standard-4'],default:'e2-medium'},
+      {key:'min_master_version',label:'Min master version',type:'text',default:'latest'}],
+    CDN:[
+      {key:'enable_cdn',label:'Enable CDN',type:'boolean',default:true},
+      {key:'cache_mode',label:'Cache mode',type:'select',options:['CACHE_ALL_STATIC','USE_ORIGIN_HEADERS','FORCE_CACHE_ALL'],default:'CACHE_ALL_STATIC'}]
+  }
+};
+function schemaFor(provider, code){
+  return (PARAM_SCHEMAS[provider] && PARAM_SCHEMAS[provider][code]) || [];
+}
+function defaultParams(provider, code){
+  var out = {};
+  schemaFor(provider, code).forEach(function(f){ out[f.key] = f.default; });
+  return out;
+}
+
+var uid = (function(){var n=0; return function(p){n++; return p+'_'+n;};})();
+
+var state = {
+  accounts:[],
+  internet:{x:1020,y:40},
+  externalIps:[],
+  connections:[],
+  connectFrom:null,
+  selectedConn:null,
+  selectedAsset:null,
+  selectedExtIp:null
+};
+
+function seed(){
+  var acc1 = mkAccount('AWS Account 1','aws',60,120);
+  var ec2 = mkAsset(acc1,'aws','EC2','Web tier EC2');
+  var alb = mkAsset(acc1,'aws','ALB','Public ALB');
+  var rds = mkAsset(acc1,'aws','RDS','Orders DB');
+  var cdn = mkAsset(acc1,'aws','CDN','Edge CDN');
+  state.accounts.push(acc1);
+
+  var acc2 = mkAccount('AWS Account 2','aws',420,340);
+  var lam = mkAsset(acc2,'aws','\u03BB','Image resize fn');
+  var s3 = mkAsset(acc2,'aws','S3','Uploads bucket');
+  state.accounts.push(acc2);
+
+  var acc3 = mkAccount('DigitalOcean','digitalocean',760,120);
+  var drp = mkAsset(acc3,'digitalocean','DRP','App droplet');
+  var doDb = mkAsset(acc3,'digitalocean','DB','Managed PG');
+  state.accounts.push(acc3);
+
+  var acc4 = mkAccount('Azure','azure',760,420);
+  var azVm = mkAsset(acc4,'azure','VM','Batch worker');
+  state.accounts.push(acc4);
+
+  // internet -> CDN : public ingress, this is the real external surface
+  connectPair({type:'internet'}, {type:'asset',accountId:acc1.id,assetId:cdn.id},
+    [{protocol:'TCP',port:'443',detail:''},{protocol:'TCP',port:'80',detail:''}],
+    []);
+
+  // CDN -> ALB : CDN fetches from origin, ALB never initiates back
+  connectPair({type:'asset',accountId:acc1.id,assetId:cdn.id}, {type:'asset',accountId:acc1.id,assetId:alb.id},
+    [{protocol:'TCP',port:'443',detail:'origin fetch'}],
+    []);
+
+  // ALB -> EC2 : ALB can reach EC2 on 8080, EC2 never initiates to ALB
+  connectPair({type:'asset',accountId:acc1.id,assetId:alb.id}, {type:'asset',accountId:acc1.id,assetId:ec2.id},
+    [{protocol:'TCP',port:'8080',detail:'health check + traffic'}],
+    []);
+
+  // EC2 -> RDS : EC2 can reach RDS on 5432, RDS never initiates to EC2
+  connectPair({type:'asset',accountId:acc1.id,assetId:ec2.id}, {type:'asset',accountId:acc1.id,assetId:rds.id},
+    [{protocol:'TCP',port:'5432',detail:'app queries'}],
+    []);
+
+  // EC2 -> Internet : outbound only, e.g. OS/package updates. Internet cannot reach EC2 directly.
+  connectPair({type:'asset',accountId:acc1.id,assetId:ec2.id}, {type:'internet'},
+    [{protocol:'TCP',port:'443',detail:'OS + package updates'}],
+    []);
+
+  // Lambda -> S3 : Lambda can reach S3 on 443, S3 never initiates to Lambda
+  connectPair({type:'asset',accountId:acc2.id,assetId:lam.id}, {type:'asset',accountId:acc2.id,assetId:s3.id},
+    [{protocol:'TCP',port:'443',detail:'GetObject / PutObject'}],
+    []);
+
+  // Office jumphost -> EC2 : hardcoded external IP, not managed by OpenTofu.
+  // The jumphost can SSH into EC2; EC2 never initiates back to it.
+  var jump = mkExternalIp('Office jumphost', '203.0.113.10', 1180, 40);
+  connectPair({type:'extip',id:jump.id}, {type:'asset',accountId:acc1.id,assetId:ec2.id},
+    [{protocol:'TCP',port:'22',detail:'admin SSH access'}],
+    []);
+}
+
+function mkAccount(name,provider,x,y){
+  return {id:uid('acc'),name:name,provider:provider,x:x,y:y,assets:[]};
+}
+function mkAsset(account,provider,code,name){
+  var a = {id:uid('asset'),provider:provider,code:code,name:name,params:defaultParams(provider,code)};
+  account.assets.push(a);
+  return a;
+}
+function mkExternalIp(label, ip, x, y){
+  var e = {id:uid('extip'), label:label, ip:ip, x:x, y:y};
+  state.externalIps.push(e);
+  return e;
+}
+function connectPair(a,b,aToB,bToA){
+  state.connections.push({id:uid('conn'), a:a, b:b, aToB:aToB||[], bToA:bToA||[]});
+}
+
+seed();
+
+var canvas = document.getElementById('canvas');
+var canvasWrap = document.getElementById('canvas-wrap');
+var svg = document.getElementById('lines-svg');
+var linesLayer = document.getElementById('lines-layer');
+
+function nodeKey(node){
+  if(node.type==='internet') return 'internet';
+  if(node.type==='extip') return 'extip:'+node.id;
+  return 'asset:'+node.accountId+':'+node.assetId;
+}
+function nodeLabel(node){
+  if(node.type==='internet') return 'Internet';
+  if(node.type==='extip'){
+    var e = state.externalIps.find(function(x){return x.id===node.id;});
+    if(!e) return '(removed)';
+    return e.label+' ('+e.ip+')';
+  }
+  var acc = state.accounts.find(function(a){return a.id===node.accountId;});
+  if(!acc) return '(removed)';
+  var asset = acc.assets.find(function(a){return a.id===node.assetId;});
+  if(!asset) return acc.name+' / (removed)';
+  return acc.name+' \u2192 '+asset.name;
+}
+function nodeExists(node){
+  if(node.type==='internet') return true;
+  if(node.type==='extip') return !!state.externalIps.find(function(x){return x.id===node.id;});
+  var acc = state.accounts.find(function(a){return a.id===node.accountId;});
+  if(!acc) return false;
+  return !!acc.assets.find(function(a){return a.id===node.assetId;});
+}
+function internetExposure(conn){
+  if(conn.a.type!=='internet' && conn.b.type!=='internet') return null;
+  var internetIsA = conn.a.type==='internet';
+  var inbound = internetIsA ? conn.aToB : conn.bToA;
+  var outbound = internetIsA ? conn.bToA : conn.aToB;
+  return {internetIsA:internetIsA, inbound:inbound, outbound:outbound, hasInbound:inbound.length>0, hasOutbound:outbound.length>0};
+}
+function connLinkKind(conn){
+  if(conn.a.type==='internet' || conn.b.type==='internet') return 'internet';
+  if(conn.a.type==='extip' || conn.b.type==='extip') return 'extip';
+  return 'internal';
+}
+
+function renderAll(){
+  var existingAccEls = canvas.querySelectorAll('.account, .internet-node, .extip-node, .add-account-panel, .add-extip-panel, .type-menu');
+  existingAccEls.forEach(function(el){el.remove();});
+
+  var internetEl = buildInternetNode();
+  canvas.appendChild(internetEl);
+
+  state.externalIps.forEach(function(ip){
+    canvas.appendChild(buildExternalIpEl(ip));
+  });
+
+  state.accounts.forEach(function(acc){
+    canvas.appendChild(buildAccountEl(acc));
+  });
+
+  requestAnimationFrame(updateLines);
+}
+
+function buildInternetNode(){
+  var el = document.createElement('div');
+  el.className = 'internet-node';
+  el.style.left = state.internet.x+'px';
+  el.style.top = state.internet.y+'px';
+  el.innerHTML =
+    '<div class="internet-ring"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><circle cx="12" cy="12" r="9.5"/><path d="M2.5 12h19M12 2.5c2.6 2.6 4 6 4 9.5s-1.4 6.9-4 9.5c-2.6-2.6-4-6-4-9.5s1.4-6.9 4-9.5z"/></svg></div>'+
+    '<div class="internet-label">INTERNET</div>'+
+    '<div class="internet-sub">public network</div>'+
+    '<div class="connector" data-node="internet" title="Drag a connection from here"></div>';
+  makeDraggable(el, el, function(dx,dy){
+    state.internet.x += dx; state.internet.y += dy;
+    el.style.left = state.internet.x+'px'; el.style.top = state.internet.y+'px';
+  });
+  return el;
+}
+
+function buildExternalIpEl(ip){
+  var el = document.createElement('div');
+  el.className = 'extip-node';
+  if(state.selectedExtIp===ip.id) el.classList.add('selected');
+  el.style.left = ip.x+'px';
+  el.style.top = ip.y+'px';
+  el.dataset.extipId = ip.id;
+  el.innerHTML =
+    '<div class="extip-box">'+
+      '<div class="extip-close" title="Remove">\u2715</div>'+
+      '<div class="extip-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/></svg></div>'+
+      '<div class="extip-label">'+escapeHtml(ip.label)+'</div>'+
+      '<div class="extip-ip">'+escapeHtml(ip.ip)+'</div>'+
+    '</div>'+
+    '<div class="connector" data-node="extip:'+ip.id+'" title="Drag a connection from here"></div>';
+  el.querySelector('.extip-close').addEventListener('click', function(e){
+    e.stopPropagation();
+    removeExternalIp(ip.id);
+  });
+  makeDraggable(el, el, function(dx,dy){
+    ip.x += dx; ip.y += dy;
+    el.style.left = ip.x+'px'; el.style.top = ip.y+'px';
+  }, function(){
+    openExtIpPanel(ip.id);
+  });
+  return el;
+}
+
+function buildAccountEl(acc){
+  var p = PROVIDERS[acc.provider];
+  var el = document.createElement('div');
+  el.className = 'account';
+  el.style.left = acc.x+'px';
+  el.style.top = acc.y+'px';
+  el.dataset.accountId = acc.id;
+
+  var header = document.createElement('div');
+  header.className = 'account-header';
+  header.innerHTML =
+    '<span class="account-dot" style="background:'+p.color+'"></span>'+
+    '<span class="account-name">'+escapeHtml(acc.name)+'</span>'+
+    '<span class="account-provider-tag" style="background:'+p.dim+';color:'+p.color+'">'+p.label+'</span>'+
+    '<span class="account-close" title="Remove account">\u2715</span>';
+  header.querySelector('.account-close').addEventListener('click', function(e){
+    e.stopPropagation();
+    removeAccount(acc.id);
+  });
+  el.appendChild(header);
+
+  var body = document.createElement('div');
+  body.className = 'account-body';
+
+  acc.assets.forEach(function(asset){
+    body.appendChild(buildAssetEl(acc, asset, p));
+  });
+
+  var addTile = document.createElement('div');
+  addTile.className = 'add-tile';
+  addTile.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>';
+  addTile.addEventListener('click', function(e){
+    e.stopPropagation();
+    openTypeMenu(addTile, acc, p);
+  });
+  body.appendChild(addTile);
+
+  el.appendChild(body);
+
+  makeDraggable(header, el, function(dx,dy){
+    acc.x += dx; acc.y += dy;
+    el.style.left = acc.x+'px'; el.style.top = acc.y+'px';
+  });
+
+  return el;
+}
+
+function buildAssetEl(acc, asset, p){
+  var el = document.createElement('div');
+  el.className = 'asset';
+  el.dataset.accountId = acc.id;
+  el.dataset.assetId = asset.id;
+  if(state.selectedAsset && state.selectedAsset.accountId===acc.id && state.selectedAsset.assetId===asset.id){
+    el.classList.add('selected');
+  }
+  el.innerHTML =
+    '<div class="asset-close" title="Remove asset">\u2715</div>'+
+    '<div class="asset-badge" style="background:'+p.dim+';color:'+p.color+'">'+escapeHtml(asset.code)+'</div>'+
+    '<div class="asset-name">'+escapeHtml(asset.name)+'</div>'+
+    '<div class="connector" data-node="asset:'+acc.id+':'+asset.id+'" title="Drag a connection from here"></div>';
+  el.querySelector('.asset-close').addEventListener('click', function(e){
+    e.stopPropagation();
+    removeAsset(acc.id, asset.id);
+  });
+  el.addEventListener('click', function(e){
+    if(e.target.closest('.connector, .asset-close')) return;
+    openAssetPanel(acc.id, asset.id);
+  });
+  return el;
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+function makeDraggable(handle, moveEl, onDelta, onClickNoDrag){
+  handle.addEventListener('mousedown', function(e){
+    if(e.target.closest('.account-close, .asset-close, .extip-close, .connector')) return;
+    e.preventDefault();
+    var startX = e.clientX, startY = e.clientY;
+    var origX = e.clientX, origY = e.clientY;
+    var scale = 1;
+    function onMove(ev){
+      var dx = (ev.clientX - startX) / scale;
+      var dy = (ev.clientY - startY) / scale;
+      startX = ev.clientX; startY = ev.clientY;
+      onDelta(dx,dy);
+      updateLines();
+    }
+    function onUp(ev){
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      var totalMove = Math.abs(ev.clientX-origX) + Math.abs(ev.clientY-origY);
+      if(onClickNoDrag && totalMove < 4){ onClickNoDrag(); }
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+function removeAccount(accId){
+  state.accounts = state.accounts.filter(function(a){return a.id!==accId;});
+  state.connections = state.connections.filter(function(c){
+    return nodeExists(c.a) && nodeExists(c.b);
+  });
+  if(state.selectedConn && !state.connections.find(function(c){return c.id===state.selectedConn;})){
+    closeDrawer();
+  }
+  if(state.selectedAsset && state.selectedAsset.accountId===accId){
+    closeDrawer();
+  }
+  renderAll();
+}
+function removeAsset(accId, assetId){
+  var acc = state.accounts.find(function(a){return a.id===accId;});
+  if(!acc) return;
+  acc.assets = acc.assets.filter(function(a){return a.id!==assetId;});
+  state.connections = state.connections.filter(function(c){
+    return nodeExists(c.a) && nodeExists(c.b);
+  });
+  if(state.selectedConn && !state.connections.find(function(c){return c.id===state.selectedConn;})){
+    closeDrawer();
+  }
+  if(state.selectedAsset && state.selectedAsset.accountId===accId && state.selectedAsset.assetId===assetId){
+    closeDrawer();
+  }
+  renderAll();
+}
+function removeExternalIp(id){
+  state.externalIps = state.externalIps.filter(function(e){return e.id!==id;});
+  state.connections = state.connections.filter(function(c){
+    return nodeExists(c.a) && nodeExists(c.b);
+  });
+  if(state.selectedExtIp===id){
+    closeDrawer();
+  }
+  renderAll();
+}
+
+function openTypeMenu(anchorEl, acc, p){
+  closeMenus();
+  var menu = document.createElement('div');
+  menu.className = 'type-menu';
+  var r = anchorEl.getBoundingClientRect();
+  var cr = canvas.getBoundingClientRect();
+  menu.style.left = (r.left - cr.left) + 'px';
+  menu.style.top = (r.bottom - cr.top + 6) + 'px';
+  p.types.forEach(function(t){
+    var item = document.createElement('div');
+    item.className = 'type-menu-item';
+    item.innerHTML = '<span class="type-menu-code" style="background:'+p.dim+';color:'+p.color+'">'+escapeHtml(t.code)+'</span><span>'+escapeHtml(t.name)+'</span>';
+    item.addEventListener('click', function(e){
+      e.stopPropagation();
+      var count = acc.assets.filter(function(a){return a.code===t.code;}).length + 1;
+      mkAsset(acc, acc.provider, t.code, count>1 ? t.name+' '+count : t.name);
+      closeMenus();
+      renderAll();
+    });
+    menu.appendChild(item);
+  });
+  canvas.appendChild(menu);
+}
+function closeMenus(){
+  canvas.querySelectorAll('.type-menu').forEach(function(m){m.remove();});
+}
+
+canvas.addEventListener('mousedown', function(e){
+  if(e.target.classList.contains('connector')){
+    e.stopPropagation();
+    onConnectorClick(e.target);
+    return;
+  }
+  if(!e.target.closest('.type-menu, .add-tile')){
+    closeMenus();
+  }
+  if(!e.target.closest('.connector')){
+    if(state.connectFrom){
+      state.connectFrom = null;
+      clearConnectingHighlight();
+    }
+  }
+});
+
+function onConnectorClick(dotEl){
+  var key = dotEl.dataset.node;
+  var node = keyToNode(key);
+  if(!state.connectFrom){
+    state.connectFrom = node;
+    dotEl.classList.add('connecting');
+  } else {
+    if(nodeKey(state.connectFrom) === key){
+      state.connectFrom = null;
+      clearConnectingHighlight();
+      return;
+    }
+    var exists = state.connections.some(function(c){
+      var k1=nodeKey(c.a), k2=nodeKey(c.b);
+      return (k1===nodeKey(state.connectFrom) && k2===key) || (k2===nodeKey(state.connectFrom) && k1===key);
+    });
+    if(!exists){
+      state.connections.push({id:uid('conn'), a:state.connectFrom, b:node, aToB:[], bToA:[]});
+    }
+    state.connectFrom = null;
+    clearConnectingHighlight();
+    updateLines();
+    if(!exists){
+      var newConn = state.connections[state.connections.length-1];
+      selectConnection(newConn.id);
+    }
+  }
+}
+function clearConnectingHighlight(){
+  canvas.querySelectorAll('.connector.connecting').forEach(function(c){c.classList.remove('connecting');});
+}
+function keyToNode(key){
+  if(key==='internet') return {type:'internet'};
+  if(key.indexOf('extip:')===0) return {type:'extip', id:key.slice(6)};
+  var parts = key.split(':');
+  return {type:'asset', accountId:parts[1], assetId:parts[2]};
+}
+
+function updateLines(){
+  var cr = canvas.getBoundingClientRect();
+  linesLayer.innerHTML = '';
+  state.connections.forEach(function(conn){
+    var p1 = pointFor(conn.a, cr);
+    var p2 = pointFor(conn.b, cr);
+    if(!p1 || !p2) return;
+    var linkKind = connLinkKind(conn);
+    var exposure = internetExposure(conn);
+    var color, dash, widthBase;
+    if(linkKind==='internet'){
+      if(exposure.hasInbound){ color='var(--danger)'; dash='none'; widthBase=2.2; }
+      else if(exposure.hasOutbound){ color='var(--warning)'; dash='6,4'; widthBase=1.6; }
+      else { color='var(--text-faint)'; dash='2,4'; widthBase=1.4; }
+    } else if(linkKind==='extip'){
+      var hasAny = conn.aToB.length>0 || conn.bToA.length>0;
+      color='var(--extip)'; dash = hasAny ? '4,3' : '2,4'; widthBase = hasAny ? 1.8 : 1.4;
+    } else {
+      color='var(--accent)'; dash='none'; widthBase=1.6;
+    }
+
+    var midY = (p1.y + p2.y)/2;
+    var c1x = p1.x, c1y = p1.y + Math.max(40, Math.abs(midY-p1.y));
+    var c2x = p2.x, c2y = p2.y + Math.max(40, Math.abs(midY-p2.y));
+    var d = 'M '+p1.x+' '+p1.y+' C '+c1x+' '+c1y+', '+c2x+' '+c2y+', '+p2.x+' '+p2.y;
+
+    var g = document.createElementNS('http://www.w3.org/2000/svg','g');
+
+    var hit = document.createElementNS('http://www.w3.org/2000/svg','path');
+    hit.setAttribute('d', d);
+    hit.setAttribute('class','hitpath');
+    hit.addEventListener('click', function(){ selectConnection(conn.id); });
+    g.appendChild(hit);
+
+    var path = document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill','none');
+    path.setAttribute('stroke', color);
+    path.setAttribute('stroke-width', state.selectedConn===conn.id ? (widthBase+0.8) : widthBase);
+    path.setAttribute('stroke-dasharray', dash);
+    path.setAttribute('opacity', state.selectedConn===conn.id ? '1' : '0.75');
+    path.style.pointerEvents='none';
+    g.appendChild(path);
+
+    var midX = (p1.x+p2.x)/2, midYc = (c1y+c2y)/2;
+    var hasAtoB = conn.aToB.length>0, hasBtoA = conn.bToA.length>0;
+    var arrow = hasAtoB && hasBtoA ? '\u2194' : hasAtoB ? '\u2192' : hasBtoA ? '\u2190' : '\u2013';
+    var ruleCount = conn.aToB.length + conn.bToA.length;
+    var chipLabel = arrow + ' ' + ruleCount;
+    var chipW = 34, chipH = 15;
+    var chip = document.createElementNS('http://www.w3.org/2000/svg','g');
+    chip.style.cursor='pointer';
+    chip.addEventListener('click', function(){ selectConnection(conn.id); });
+    var rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    rect.setAttribute('x', midX - chipW/2);
+    rect.setAttribute('y', midYc - chipH/2);
+    rect.setAttribute('width', chipW);
+    rect.setAttribute('height', chipH);
+    rect.setAttribute('rx', 4);
+    rect.setAttribute('fill', '#0F1319');
+    rect.setAttribute('stroke', color);
+    rect.setAttribute('stroke-width', '1');
+    chip.appendChild(rect);
+    var txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+    txt.setAttribute('x', midX);
+    txt.setAttribute('y', midYc + 3.5);
+    txt.setAttribute('text-anchor','middle');
+    txt.setAttribute('font-family','IBM Plex Mono, monospace');
+    txt.setAttribute('font-size','9.5');
+    txt.setAttribute('font-weight','600');
+    txt.setAttribute('fill', color);
+    txt.textContent = chipLabel;
+    chip.appendChild(txt);
+    g.appendChild(chip);
+
+    linesLayer.appendChild(g);
+  });
+}
+function pointFor(node, cr){
+  var key = nodeKey(node);
+  var el = canvas.querySelector('[data-node="'+key+'"]');
+  if(!el) return null;
+  var r = el.getBoundingClientRect();
+  return { x: r.left + r.width/2 - cr.left, y: r.top + r.height/2 - cr.top };
+}
+
+window.addEventListener('resize', updateLines);
+canvasWrap.addEventListener('scroll', updateLines);
+
+var drawer = document.getElementById('drawer');
+var drawerTitle = document.getElementById('drawer-title');
+var drawerFlag = document.getElementById('drawer-flag');
+var connPanel = document.getElementById('conn-panel');
+var assetPanel = document.getElementById('asset-panel');
+var atobRows = document.getElementById('atob-rows');
+var btoaRows = document.getElementById('btoa-rows');
+var atobTitle = document.getElementById('atob-title');
+var btoaTitle = document.getElementById('btoa-title');
+var atobSub = document.getElementById('atob-sub');
+var btoaSub = document.getElementById('btoa-sub');
+var assetResourceType = document.getElementById('asset-resource-type');
+var assetFields = document.getElementById('asset-fields');
+var extipPanel = document.getElementById('extip-panel');
+var extipLabelInput = document.getElementById('extip-label-input');
+var extipIpInput = document.getElementById('extip-ip-input');
+var btnDeleteItem = document.getElementById('btn-delete-item');
+
+function selectConnection(id){
+  state.selectedConn = id;
+  state.selectedAsset = null;
+  state.selectedExtIp = null;
+  updateLines();
+  renderAll();
+  renderDrawer();
+}
+function openAssetPanel(accountId, assetId){
+  state.selectedAsset = {accountId:accountId, assetId:assetId};
+  state.selectedConn = null;
+  state.selectedExtIp = null;
+  updateLines();
+  renderAll();
+  renderDrawer();
+}
+function openExtIpPanel(id){
+  state.selectedExtIp = id;
+  state.selectedConn = null;
+  state.selectedAsset = null;
+  updateLines();
+  renderAll();
+  renderDrawer();
+}
+function closeDrawer(){
+  state.selectedConn = null;
+  state.selectedAsset = null;
+  state.selectedExtIp = null;
+  drawer.classList.add('hidden');
+  renderAll();
+}
+document.getElementById('btn-close-drawer').addEventListener('click', closeDrawer);
+btnDeleteItem.addEventListener('click', function(){
+  if(state.selectedConn){
+    state.connections = state.connections.filter(function(c){return c.id!==state.selectedConn;});
+  } else if(state.selectedAsset){
+    removeAsset(state.selectedAsset.accountId, state.selectedAsset.assetId);
+  } else if(state.selectedExtIp){
+    removeExternalIp(state.selectedExtIp);
+  }
+  closeDrawer();
+});
+
+function renderDrawer(){
+  if(state.selectedConn){
+    connPanel.classList.remove('hidden');
+    assetPanel.classList.add('hidden');
+    extipPanel.classList.add('hidden');
+    btnDeleteItem.textContent = 'Delete connection';
+    renderConnPanel();
+  } else if(state.selectedAsset){
+    connPanel.classList.add('hidden');
+    assetPanel.classList.remove('hidden');
+    extipPanel.classList.add('hidden');
+    btnDeleteItem.textContent = 'Delete asset';
+    renderAssetPanel();
+  } else if(state.selectedExtIp){
+    connPanel.classList.add('hidden');
+    assetPanel.classList.add('hidden');
+    extipPanel.classList.remove('hidden');
+    btnDeleteItem.textContent = 'Delete IP';
+    renderExtIpPanel();
+  } else {
+    drawer.classList.add('hidden');
+  }
+}
+
+function renderExtIpPanel(){
+  var e = state.externalIps.find(function(x){return x.id===state.selectedExtIp;});
+  if(!e){ drawer.classList.add('hidden'); return; }
+  drawer.classList.remove('hidden');
+
+  drawerTitle.innerHTML = '<span>'+escapeHtml(e.label)+'</span>';
+  drawerFlag.style.background = 'var(--extip-dim)';
+  drawerFlag.style.color = 'var(--extip)';
+  drawerFlag.innerHTML = 'external IP \u00b7 not managed by OpenTofu';
+
+  extipLabelInput.value = e.label;
+  extipIpInput.value = e.ip;
+  extipLabelInput.oninput = function(){ e.label = extipLabelInput.value; renderAll(); };
+  extipIpInput.oninput = function(){ e.ip = extipIpInput.value; renderAll(); };
+}
+
+function renderConnPanel(){
+  var conn = state.connections.find(function(c){return c.id===state.selectedConn;});
+  if(!conn){ drawer.classList.add('hidden'); return; }
+  drawer.classList.remove('hidden');
+
+  var exposure = internetExposure(conn);
+  var aLabel = nodeLabel(conn.a), bLabel = nodeLabel(conn.b);
+  drawerTitle.innerHTML = '<span>'+escapeHtml(aLabel)+'</span><span class="arrow">\u2194</span><span>'+escapeHtml(bLabel)+'</span>';
+
+  atobTitle.className = 'rule-section-title';
+  btoaTitle.className = 'rule-section-title';
+
+  if(exposure){
+    if(exposure.hasInbound){
+      drawerFlag.style.background = 'rgba(232,87,75,0.14)';
+      drawerFlag.style.color = 'var(--danger)';
+      drawerFlag.innerHTML = '\u26A0 publicly reachable \u2014 the internet can initiate to this asset';
+    } else if(exposure.hasOutbound){
+      drawerFlag.style.background = 'rgba(227,167,61,0.14)';
+      drawerFlag.style.color = 'var(--warning)';
+      drawerFlag.innerHTML = '\u2197 outbound only \u2014 asset can reach the internet, not reachable from it';
+    } else {
+      drawerFlag.style.background = 'rgba(139,147,164,0.12)';
+      drawerFlag.style.color = 'var(--text-dim)';
+      drawerFlag.innerHTML = 'no internet rules defined yet';
+    }
+    var inboundIsAtoB = exposure.internetIsA;
+    if(inboundIsAtoB){ atobTitle.classList.add('rst-danger'); btoaTitle.classList.add('rst-warning'); }
+    else { btoaTitle.classList.add('rst-danger'); atobTitle.classList.add('rst-warning'); }
+  } else {
+    drawerFlag.style.background = 'rgba(89,217,199,0.12)';
+    drawerFlag.style.color = 'var(--accent)';
+    drawerFlag.innerHTML = 'internal connection';
+  }
+
+  atobTitle.textContent = aLabel+' \u2192 '+bLabel;
+  btoaTitle.textContent = bLabel+' \u2192 '+aLabel;
+  if(exposure){
+    var atobIsInbound = exposure.internetIsA;
+    atobSub.textContent = atobIsInbound ? 'public ingress \u2014 internet reaching in' : 'outbound egress \u2014 leaving to the internet';
+    btoaSub.textContent = !atobIsInbound ? 'public ingress \u2014 internet reaching in' : 'outbound egress \u2014 leaving to the internet';
+  } else {
+    atobSub.textContent = 'traffic '+bLabel+' will accept, initiated by '+aLabel;
+    btoaSub.textContent = 'traffic '+aLabel+' will accept, initiated by '+bLabel;
+  }
+
+  renderRuleList(atobRows, conn.aToB, conn, 'atob');
+  renderRuleList(btoaRows, conn.bToA, conn, 'btoa');
+}
+
+function renderAssetPanel(){
+  var sel = state.selectedAsset;
+  var acc = sel && state.accounts.find(function(a){return a.id===sel.accountId;});
+  var asset = acc && acc.assets.find(function(a){return a.id===sel.assetId;});
+  if(!asset){ drawer.classList.add('hidden'); return; }
+  drawer.classList.remove('hidden');
+
+  var p = PROVIDERS[acc.provider];
+  drawerTitle.innerHTML = '<span>'+escapeHtml(asset.name)+'</span>';
+  drawerFlag.style.background = p.dim;
+  drawerFlag.style.color = p.color;
+  drawerFlag.innerHTML = p.label+' \u00b7 '+acc.name;
+
+  assetResourceType.innerHTML = '<code style="font-family:var(--mono);font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-faint);">resource "'+resourceType(acc.provider, asset.code)+'"</code>';
+
+  assetFields.innerHTML = '';
+
+  var nameRow = document.createElement('div');
+  nameRow.className = 'field-row asset-name-field';
+  nameRow.innerHTML = '<label class="field-label">Display name</label>';
+  var nameInput = document.createElement('input');
+  nameInput.type = 'text'; nameInput.value = asset.name;
+  nameInput.addEventListener('input', function(){
+    asset.name = nameInput.value;
+    renderAll();
+  });
+  nameRow.appendChild(nameInput);
+  assetFields.appendChild(nameRow);
+
+  var schema = schemaFor(acc.provider, asset.code);
+  if(schema.length===0){
+    var empty = document.createElement('div');
+    empty.className = 'rule-empty';
+    empty.textContent = 'No configurable parameters for this resource type.';
+    assetFields.appendChild(empty);
+    return;
+  }
+
+  schema.forEach(function(field){
+    var row = document.createElement('div');
+    row.className = 'field-row';
+
+    if(field.type==='boolean'){
+      row.classList.add('field-toggle');
+      var lbl = document.createElement('label');
+      lbl.className = 'field-label';
+      lbl.style.margin = '0';
+      lbl.innerHTML = field.label+' <code>'+field.key+'</code>';
+      var sw = document.createElement('label');
+      sw.className = 'switch';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!asset.params[field.key];
+      cb.addEventListener('change', function(){ asset.params[field.key] = cb.checked; });
+      var track = document.createElement('span');
+      track.className = 'switch-track';
+      sw.appendChild(cb); sw.appendChild(track);
+      row.appendChild(lbl); row.appendChild(sw);
+    } else if(field.type==='select'){
+      var lbl2 = document.createElement('label');
+      lbl2.className = 'field-label';
+      lbl2.innerHTML = field.label+' <code>'+field.key+'</code>';
+      var sel = document.createElement('select');
+      field.options.forEach(function(opt){
+        var o = document.createElement('option'); o.value = opt; o.textContent = opt;
+        if(asset.params[field.key]===opt) o.selected = true;
+        sel.appendChild(o);
+      });
+      sel.addEventListener('change', function(){ asset.params[field.key] = sel.value; });
+      row.appendChild(lbl2); row.appendChild(sel);
+    } else {
+      var lbl3 = document.createElement('label');
+      lbl3.className = 'field-label';
+      lbl3.innerHTML = field.label+' <code>'+field.key+'</code>';
+      var inp = document.createElement('input');
+      inp.type = field.type==='number' ? 'number' : 'text';
+      inp.value = asset.params[field.key];
+      inp.addEventListener('input', function(){
+        asset.params[field.key] = field.type==='number' ? Number(inp.value) : inp.value;
+      });
+      row.appendChild(lbl3); row.appendChild(inp);
+    }
+
+    assetFields.appendChild(row);
+  });
+}
+
+function renderRuleList(container, rules, conn, dir){
+  container.innerHTML = '';
+  if(rules.length===0){
+    var empty = document.createElement('div');
+    empty.className = 'rule-empty';
+    empty.textContent = 'No connection this way \u2014 blocked by default.';
+    container.appendChild(empty);
+    return;
+  }
+  rules.forEach(function(rule, idx){
+    var row = document.createElement('div');
+    row.className = 'rule-row';
+
+    var protoSel = document.createElement('select');
+    ['TCP','UDP','ICMP','ALL'].forEach(function(opt){
+      var o = document.createElement('option'); o.value=opt; o.textContent=opt;
+      if(rule.protocol===opt) o.selected=true;
+      protoSel.appendChild(o);
+    });
+    protoSel.addEventListener('change', function(){ rule.protocol = protoSel.value; });
+
+    var portInput = document.createElement('input');
+    portInput.type='text'; portInput.placeholder='443'; portInput.value=rule.port||'';
+    portInput.addEventListener('input', function(){ rule.port = portInput.value; });
+
+    var noteInput = document.createElement('input');
+    noteInput.type='text'; noteInput.placeholder='optional note or CIDR override';
+    noteInput.value = rule.detail||'';
+    noteInput.addEventListener('input', function(){ rule.detail = noteInput.value; });
+
+    var del = document.createElement('div');
+    del.className='rule-del'; del.innerHTML='\u2715';
+    del.addEventListener('click', function(){
+      var arr = dir==='atob' ? conn.aToB : conn.bToA;
+      arr.splice(idx,1);
+      renderDrawer();
+      updateLines();
+    });
+
+    row.appendChild(protoSel); row.appendChild(portInput); row.appendChild(noteInput); row.appendChild(del);
+    container.appendChild(row);
+  });
+}
+
+document.querySelectorAll('.rule-add').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var conn = state.connections.find(function(c){return c.id===state.selectedConn;});
+    if(!conn) return;
+    var dir = btn.dataset.dir;
+    var arr = dir==='atob' ? conn.aToB : conn.bToA;
+    arr.push({protocol:'TCP', port:'', detail:''});
+    renderDrawer();
+    updateLines();
+  });
+});
+
+var addAccountBtn = document.getElementById('btn-add-account');
+addAccountBtn.addEventListener('click', function(e){
+  e.stopPropagation();
+  var existing = document.querySelector('.add-account-panel');
+  if(existing){ existing.remove(); return; }
+  document.querySelectorAll('.add-extip-panel').forEach(function(p){p.remove();});
+  var panel = document.createElement('div');
+  panel.className = 'add-account-panel';
+  panel.addEventListener('mousedown', function(e){ e.stopPropagation(); });
+  panel.innerHTML =
+    '<label>Account name</label>'+
+    '<input type="text" id="new-acc-name" value="AWS Account 3">'+
+    '<label>Provider</label>'+
+    '<select id="new-acc-provider">'+
+      '<option value="aws">AWS</option>'+
+      '<option value="azure">Azure</option>'+
+      '<option value="digitalocean">DigitalOcean</option>'+
+      '<option value="gcp">GCP</option>'+
+    '</select>'+
+    '<div class="add-account-row">'+
+      '<div class="toolbtn" id="cancel-add-acc">Cancel</div>'+
+      '<div class="toolbtn primary" id="confirm-add-acc">Add account</div>'+
+    '</div>';
+  canvas.appendChild(panel);
+  var nameInput = panel.querySelector('#new-acc-name');
+  var provSel = panel.querySelector('#new-acc-provider');
+  provSel.addEventListener('change', function(){
+    var label = PROVIDERS[provSel.value].label;
+    var count = state.accounts.filter(function(a){return a.provider===provSel.value;}).length + 1;
+    nameInput.value = label+' Account '+count;
+  });
+  panel.querySelector('#cancel-add-acc').addEventListener('click', function(){ panel.remove(); });
+  panel.querySelector('#confirm-add-acc').addEventListener('click', function(){
+    var name = nameInput.value.trim() || 'New account';
+    var provider = provSel.value;
+    var pos = nextAccountPosition();
+    state.accounts.push(mkAccount(name, provider, pos.x, pos.y));
+    panel.remove();
+    renderAll();
+  });
+});
+function nextAccountPosition(){
+  var n = state.accounts.length;
+  return {x: 60 + (n%3)*380, y: 120 + Math.floor(n/3)*300};
+}
+
+var addExtIpBtn = document.getElementById('btn-add-extip');
+addExtIpBtn.addEventListener('click', function(e){
+  e.stopPropagation();
+  var existing = document.querySelector('.add-extip-panel');
+  if(existing){ existing.remove(); return; }
+  document.querySelectorAll('.add-account-panel').forEach(function(p){p.remove();});
+  var panel = document.createElement('div');
+  panel.className = 'add-extip-panel';
+  panel.addEventListener('mousedown', function(e){ e.stopPropagation(); });
+  panel.innerHTML =
+    '<label>Label</label>'+
+    '<input type="text" id="new-extip-label" value="Jumphost">'+
+    '<label>IP address</label>'+
+    '<input type="text" id="new-extip-ip" placeholder="203.0.113.10" value="203.0.113.10">'+
+    '<div class="add-account-row">'+
+      '<div class="toolbtn" id="cancel-add-extip">Cancel</div>'+
+      '<div class="toolbtn primary" id="confirm-add-extip">Add IP</div>'+
+    '</div>';
+  canvas.appendChild(panel);
+  panel.querySelector('#cancel-add-extip').addEventListener('click', function(){ panel.remove(); });
+  panel.querySelector('#confirm-add-extip').addEventListener('click', function(){
+    var label = panel.querySelector('#new-extip-label').value.trim() || 'External IP';
+    var ip = panel.querySelector('#new-extip-ip').value.trim() || '0.0.0.0/32';
+    var pos = nextExtIpPosition();
+    mkExternalIp(label, ip, pos.x, pos.y);
+    panel.remove();
+    renderAll();
+  });
+});
+function nextExtIpPosition(){
+  var n = state.externalIps.length;
+  return {x: 1180, y: 40 + n*110};
+}
+
+var genModalRoot = null;
+document.getElementById('btn-generate').addEventListener('click', function(){
+  if(genModalRoot){ genModalRoot.remove(); genModalRoot=null; return; }
+  var backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.addEventListener('mousedown', function(e){ if(e.target===backdrop){ backdrop.remove(); genModalRoot=null; } });
+  var modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.addEventListener('mousedown', function(e){ e.stopPropagation(); });
+  modal.innerHTML =
+    '<div class="modal-head"><div class="modal-head-title">generated_config.tf.preview</div><div class="modal-close">\u2715</div></div>'+
+    '<div class="modal-body"><pre></pre></div>';
+  modal.querySelector('.modal-close').addEventListener('click', function(){ backdrop.remove(); genModalRoot=null; });
+  modal.querySelector('pre').textContent = generateConfig();
+  backdrop.appendChild(modal);
+  canvas.parentElement.appendChild(backdrop);
+  genModalRoot = backdrop;
+});
+
+function generateConfig(){
+  var lines = [];
+  lines.push('# Generated scaffold \u2014 review before applying');
+  lines.push('');
+  state.accounts.forEach(function(acc){
+    lines.push('# ---- '+acc.name+' ('+PROVIDERS[acc.provider].label+') ----');
+    acc.assets.forEach(function(asset){
+      var slug = slugify(asset.name);
+      lines.push('resource "'+resourceType(acc.provider, asset.code)+'" "'+slug+'" {');
+      lines.push('  name = "'+asset.name+'"');
+      var schema = schemaFor(acc.provider, asset.code);
+      schema.forEach(function(field){
+        var val = asset.params[field.key];
+        var rendered = field.type==='text' ? '"'+val+'"' : field.type==='boolean' ? (val ? 'true' : 'false') : val;
+        lines.push('  '+field.key+' = '+rendered);
+      });
+      if(schema.length===0){
+        lines.push('  # TODO: fill in provider-specific attributes');
+      }
+      lines.push('}');
+    });
+    lines.push('');
+  });
+
+  if(state.externalIps.length>0){
+    lines.push('# ---- External endpoints (hardcoded, not managed by OpenTofu) ----');
+    state.externalIps.forEach(function(ip){
+      lines.push('# '+ip.label+' \u2014 '+ip.ip+' (e.g. a jump host or an allowlisted third-party address)');
+    });
+    lines.push('');
+  }
+
+  lines.push('# ---- Security group rules derived from connections ----');
+  lines.push('# Inbound-from-internet rules are the real external attack surface.');
+  lines.push('# Outbound-to-internet-only rules do not expose the asset to inbound traffic.');
+  lines.push('# Rules touching a hardcoded IP use that address directly \u2014 no resource is created for it.');
+  state.connections.forEach(function(conn){
+    var aLabel = nodeLabel(conn.a), bLabel = nodeLabel(conn.b);
+    var exposure = internetExposure(conn);
+    var linkKind = connLinkKind(conn);
+    lines.push('');
+    if(exposure && exposure.hasInbound){
+      lines.push('# '+aLabel+' <-> '+bLabel+'  [PUBLIC INGRESS]');
+    } else if(exposure && exposure.hasOutbound){
+      lines.push('# '+aLabel+' <-> '+bLabel+'  [outbound only]');
+    } else if(linkKind==='extip'){
+      lines.push('# '+aLabel+' <-> '+bLabel+'  [hardcoded external IP]');
+    } else {
+      lines.push('# '+aLabel+' <-> '+bLabel);
+    }
+    emitDirectionalRules(lines, conn.aToB, conn.a, conn.b);
+    emitDirectionalRules(lines, conn.bToA, conn.b, conn.a);
+    if(conn.aToB.length===0 && conn.bToA.length===0){
+      lines.push('# no traffic allowed either way yet \u2014 click the connection to add rules');
+    }
+  });
+  return lines.join('\n');
+}
+function ruleAddress(node, rule){
+  if(rule.detail && /\//.test(rule.detail)) return rule.detail;
+  if(node.type==='internet') return '0.0.0.0/0';
+  if(node.type==='extip'){
+    var e = state.externalIps.find(function(x){return x.id===node.id;});
+    if(!e) return 'unknown-ip';
+    return e.ip.indexOf('/')>-1 ? e.ip : e.ip+'/32';
+  }
+  return nodeLabel(node);
+}
+function emitDirectionalRules(lines, rules, fromNode, toNode){
+  var fromLabel = nodeLabel(fromNode), toLabel = nodeLabel(toNode);
+  rules.forEach(function(r){
+    var src = ruleAddress(fromNode, r);
+    var dst = ruleAddress(toNode, r);
+    if(toNode.type==='asset'){
+      lines.push('resource "security_rule" "'+slugify(toLabel+'_allow_from_'+fromLabel+'_'+(r.port||'any'))+'" {');
+      lines.push('  direction = "ingress"');
+      lines.push('  on        = "'+toLabel+'"');
+      lines.push('  protocol  = "'+r.protocol+'"');
+      lines.push('  port      = "'+(r.port||'*')+'"');
+      lines.push('  source    = "'+src+'"');
+      if(r.detail && !/\//.test(r.detail)) lines.push('  # note: '+r.detail);
+      lines.push('}');
+    } else {
+      lines.push('# '+fromLabel+' -> '+toLabel+' on '+r.protocol+'/'+(r.port||'*')+' \u2014 '+toLabel+' is external, no ingress resource to attach it to');
+    }
+    if(fromNode.type==='asset'){
+      lines.push('resource "security_rule" "'+slugify(fromLabel+'_allow_to_'+toLabel+'_'+(r.port||'any'))+'" {');
+      lines.push('  direction   = "egress"');
+      lines.push('  on          = "'+fromLabel+'"');
+      lines.push('  protocol    = "'+r.protocol+'"');
+      lines.push('  port        = "'+(r.port||'*')+'"');
+      lines.push('  destination = "'+dst+'"');
+      lines.push('}');
+    }
+  });
+}
+function slugify(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'resource'; }
+function resourceType(provider, code){
+  var map = {
+    aws:{EC2:'aws_instance','\u03BB':'aws_lambda_function',RDS:'aws_db_instance',S3:'aws_s3_bucket',ALB:'aws_lb',ECS:'aws_ecs_service',CDN:'aws_cloudfront_distribution'},
+    azure:{VM:'azurerm_virtual_machine',FN:'azurerm_function_app',BLB:'azurerm_storage_account',SQL:'azurerm_mssql_database',AKS:'azurerm_kubernetes_cluster',APG:'azurerm_application_gateway',CDN:'azurerm_cdn_endpoint'},
+    digitalocean:{DRP:'digitalocean_droplet',APP:'digitalocean_app',SPC:'digitalocean_spaces_bucket',DB:'digitalocean_database_cluster',K8S:'digitalocean_kubernetes_cluster',LB:'digitalocean_loadbalancer',CDN:'digitalocean_cdn'},
+    gcp:{GCE:'google_compute_instance',GCF:'google_cloudfunctions_function',GCS:'google_storage_bucket',CSQL:'google_sql_database_instance',GKE:'google_container_cluster',CDN:'google_compute_backend_bucket'}
+  };
+  return (map[provider] && map[provider][code]) || provider+'_resource';
+}
+
+renderAll();
+var initial = state.connections.find(function(c){ return c.a.type==='internet'; });
+
+})();
+</script>
+</body>
+</html>

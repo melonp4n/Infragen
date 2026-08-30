@@ -1,0 +1,208 @@
+package ui
+
+import (
+  "strconv"
+
+  "infrachart/internal/catalog"
+  "infrachart/internal/model"
+  "infrachart/internal/tofu"
+)
+
+// Selection names whatever the drawer is currently editing.
+type Selection struct {
+  Kind      string `json:"kind"`
+  ID        string `json:"id,omitempty"`
+  AccountID string `json:"accountId,omitempty"`
+  AssetID   string `json:"assetId,omitempty"`
+}
+
+// Drawer renders the edit panel for the current selection. The browser sends the
+// whole session so that labels and exposure can be worked out here rather than
+// duplicated in JavaScript.
+templ Drawer(s model.Session, sel Selection) {
+  switch sel.Kind {
+    case "conn":
+      @connPanel(s, sel)
+    case "asset":
+      @assetPanel(s, sel)
+    case "extip":
+      @extIPPanel(s, sel)
+  }
+}
+
+templ drawerFrame(title string, flag flagInfo, deleteLabel string) {
+  <div class="drawer-head">
+    <div class="drawer-title">{ title }</div>
+    <div class={ "drawer-flag", flag.Class }>{ flag.Text }</div>
+  </div>
+  <div class="drawer-body">
+    { children... }
+  </div>
+  <div class="drawer-foot">
+    <div class="toolbtn btn-danger" id="btn-delete-item">{ deleteLabel }</div>
+    <div class="toolbtn primary" id="btn-close-drawer">Close</div>
+  </div>
+}
+
+// ---- connection ------------------------------------------------------------
+
+templ connPanel(s model.Session, sel Selection) {
+  if conn := findConn(s, sel.ID); conn != nil {
+    {{ report := tofu.Classify(s) }}
+    @drawerFrame(s.Label(conn.A)+" ↔ "+s.Label(conn.B), connFlag(s, *conn), "Delete connection") {
+      @ruleSection(s, *conn, "aToB", outcomes(report, *conn, "aToB"))
+      @ruleSection(s, *conn, "bToA", outcomes(report, *conn, "bToA"))
+    }
+  }
+}
+
+// ruleSection is one direction of a connection. Direction is the point: a rule
+// list is what one side will accept when the other initiates.
+templ ruleSection(s model.Session, conn model.Connection, dir string, results []tofu.Outcome) {
+  {{ from, to := conn.A, conn.B }}
+  {{ rules := conn.AToB }}
+  if dir != "aToB" {
+    {{ from, to = conn.B, conn.A }}
+    {{ rules = conn.BToA }}
+  }
+  <div class="rule-section">
+    <div class="rule-section-head">
+      <div class={ "rule-section-title", directionClass(from, to) }>
+        { s.Label(from) + " → " + s.Label(to) }
+      </div>
+    </div>
+    <div class="rule-section-sub">{ directionHint(s, from, to) }</div>
+    if len(rules) == 0 {
+      <div class="rule-empty">No connection this way — blocked by default.</div>
+    } else {
+      <div class="rule-col-labels"><span>Proto</span><span>Port or *</span><span>Note</span><span></span></div>
+      for i, r := range rules {
+        @ruleRow(dir, i, r, outcomeAt(results, i))
+      }
+    }
+    <div class="rule-add" data-add-rule={ dir }>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"></path></svg>
+      Add allowed traffic
+    </div>
+  </div>
+}
+
+templ ruleRow(dir string, index int, r model.Rule, result *tofu.Outcome) {
+  <div class="rule-row" data-dir={ dir } data-index={ strconv.Itoa(index) }>
+    <select data-rule-field="protocol">
+      for _, p := range []string{"TCP", "UDP", "ICMP", "ALL"} {
+        <option value={ p } selected?={ p == r.Protocol }>{ p }</option>
+      }
+    </select>
+    <input
+      type="text"
+      data-rule-field="port"
+      placeholder="443"
+      title="A port, a range like 8000-8080, or * for all ports. Blank generates no rule."
+      value={ r.Port }
+    />
+    <input type="text" data-rule-field="detail" placeholder="optional note or CIDR override" value={ r.Detail }/>
+    <div class="rule-del" title="Remove rule">✕</div>
+  </div>
+  // What this rule will actually generate. Shown here so an unexpressible rule is
+  // obvious while it is being written, not after generating.
+  if result != nil && result.Reason != "" {
+    <div class={ "rule-note", noteClass(*result) }>{ noteText(*result) }</div>
+  }
+}
+
+// ---- asset -----------------------------------------------------------------
+
+templ assetPanel(s model.Session, sel Selection) {
+  if acc := s.Account(sel.AccountID); acc != nil {
+    if a := acc.Asset(sel.AssetID); a != nil {
+      {{ t, _ := catalog.Type(acc.Provider, a.Code) }}
+      @drawerFrame(a.Name, flagInfo{Class: "flag-provider", Text: providerLabel(acc.Provider) + " · " + acc.Name}, "Delete asset") {
+        <div>
+          <div class="rule-section-title" style="margin-bottom:12px">
+            <code class="resource-type">resource "{ t.TofuType }"</code>
+          </div>
+          <div class="field-row asset-name-field">
+            <label class="field-label" for="asset-display-name">Display name</label>
+            <input type="text" id="asset-display-name" value={ a.Name }/>
+          </div>
+          if len(t.Params) == 0 {
+            <div class="rule-empty">No configurable parameters for this resource type.</div>
+          }
+          {{ essential, advanced := splitParams(t.Params) }}
+          for _, f := range essential {
+            @paramField(f, a.Params[f.ParamKey()])
+          }
+          // Everything that is not one of the few things picked when creating the
+          // asset. A native disclosure keeps the form readable without JavaScript.
+          if len(advanced) > 0 {
+            <details class="advanced">
+              <summary>Advanced options ({ strconv.Itoa(len(advanced)) })</summary>
+              <div class="advanced-fields">
+                for _, f := range advanced {
+                  @paramField(f, a.Params[f.ParamKey()])
+                }
+              </div>
+            </details>
+          }
+        </div>
+      }
+    }
+  }
+}
+
+// paramField renders one catalog parameter. Every resource type in every
+// provider goes through this, which is why adding a type needs no new markup.
+templ paramField(f catalog.ParamField, value any) {
+  switch f.Type {
+    case catalog.FieldBoolean:
+      <div class="field-row field-toggle">
+        <label class="field-label" style="margin:0">{ f.Label } <code>{ f.Key }</code></label>
+        <label class="switch">
+          <input type="checkbox" data-param={ f.ParamKey() } checked?={ truthy(value) }/>
+          <span class="switch-track"></span>
+        </label>
+      </div>
+    case catalog.FieldSelect:
+      <div class="field-row">
+        <label class="field-label">{ f.Label } <code>{ f.Key }</code></label>
+        <select data-param={ f.ParamKey() } data-param-type={ f.Type }>
+          for _, opt := range f.Options {
+            <option value={ opt } selected?={ opt == text(value) }>{ opt }</option>
+          }
+        </select>
+      </div>
+    default:
+      <div class="field-row">
+        <label class="field-label">{ f.Label } <code>{ f.Key }</code></label>
+        <input
+          type={ inputType(f.Type) }
+          data-param={ f.ParamKey() }
+          data-param-type={ f.Type }
+          value={ text(value) }
+        />
+      </div>
+  }
+}
+
+// ---- external IP -----------------------------------------------------------
+
+templ extIPPanel(s model.Session, sel Selection) {
+  if e := s.ExternalIP(sel.ID); e != nil {
+    @drawerFrame(e.Label, flagInfo{Class: "flag-extip", Text: "external IP · not managed by OpenTofu"}, "Delete IP") {
+      <div class="note-box">
+        This is a hardcoded external address, such as a jump host or an allowlisted
+        partner IP. OpenTofu will not create it — connections to and from it use the
+        address directly in generated rules.
+      </div>
+      <div class="field-row" style="margin-top:16px">
+        <label class="field-label" for="extip-label-input">Label</label>
+        <input type="text" id="extip-label-input" value={ e.Label }/>
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="extip-ip-input">IP address <code>(CIDR accepted, e.g. /32)</code></label>
+        <input type="text" id="extip-ip-input" value={ e.IP }/>
+      </div>
+    }
+  }
+}
