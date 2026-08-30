@@ -5,7 +5,7 @@
 
 ## About
 
-Infragen is a web-application that allows users to build Cloud infrastructure using drag-and-drop nodes and flow chart connections. The output of an infrastructure map can then be used to generate Terraform/OpenTofu for deployment into live environments. This was originally developed as a visual aid for red-team infrastructure, and will be catered towards that.
+Infragen is a web-application that allows users to build Cloud infrastructure using drag-and-drop nodes and flow chart connections representing traffic ingress/egress rules. The output of an infrastructure map can then be used to generate Terraform/OpenTofu for deployment into live environments. This was originally developed as a visual aid for red-team infrastructure, and will be catered towards that.
 
 ## Design Considerations
 
