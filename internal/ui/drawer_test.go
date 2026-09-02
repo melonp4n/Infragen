@@ -73,7 +73,7 @@ func TestSplitParamsKeepsDirectivesVisible(t *testing.T) {
 		{Key: "root_volume_gb", Advanced: true},
 		{Key: catalog.ParamStaticPublicIP, Advanced: true, Directive: true},
 	}
-	essential, advanced := splitParams(fields)
+	essential, advanced := splitParams(fields, nil)
 
 	if len(advanced) != 1 || advanced[0].Key != "root_volume_gb" {
 		t.Errorf("advanced = %v, want only root_volume_gb", keys(advanced))
@@ -94,12 +94,36 @@ func TestSplitParamsPreservesOrder(t *testing.T) {
 	fields := []catalog.ParamField{
 		{Key: "a"}, {Key: "x", Advanced: true}, {Key: "b"}, {Key: "y", Advanced: true},
 	}
-	essential, advanced := splitParams(fields)
+	essential, advanced := splitParams(fields, nil)
 	if got := keys(essential); got != "a,b" {
 		t.Errorf("essential order = %s", got)
 	}
 	if got := keys(advanced); got != "x,y" {
 		t.Errorf("advanced order = %s", got)
+	}
+}
+
+// A field gated by a directive is not offered while the gate is off, because a
+// value typed into it would be dropped at generation. EC2's root_block_device is
+// the case: an instance-store AMI rejects the block outright.
+func TestSplitParamsHidesGatedFields(t *testing.T) {
+	fields := []catalog.ParamField{
+		{Key: "gate", Type: catalog.FieldBoolean, Directive: true},
+		{Key: "size", RequiresParam: "gate", Advanced: true},
+		{Key: "always", Advanced: true},
+	}
+
+	essential, advanced := splitParams(fields, map[string]any{"gate": false})
+	if got := keys(essential); got != "gate" {
+		t.Errorf("essential = %s, want just the gate", got)
+	}
+	if got := keys(advanced); got != "always" {
+		t.Errorf("advanced = %s, want the gated field dropped", got)
+	}
+
+	_, advanced = splitParams(fields, map[string]any{"gate": true})
+	if got := keys(advanced); got != "size,always" {
+		t.Errorf("advanced with the gate on = %s, want the gated field back", got)
 	}
 }
 

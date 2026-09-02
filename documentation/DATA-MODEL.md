@@ -31,12 +31,29 @@ position rather than as an entry in a list.
   "provider": "aws",
   "x": 60,
   "y": 120,
+  "params": {
+    "region": "eu-west-2",
+    "ssh_public_key": "",
+    "ssh_public_key_file": ""
+  },
   "assets": [ ... ]
 }
 ```
 
 `provider` must be a key registered in the catalog: `aws`, `azure`, `gcp`, `digitalocean`.
 `x`/`y` are canvas pixels — the position of the account card on the chart. Assets move with it.
+
+`params` are the account-wide settings, keyed by the provider's `AccountParams` in the catalog and
+edited from the gear button on the account card. They go through the same `coerce` pass as an
+asset's params, so an imported chart cannot carry a region the provider does not offer.
+
+Two things live here rather than on every asset:
+
+- **`region`** — the default for everything in the account, and what the account's VPC or resource
+  group is created in. It becomes the default of `var.<accountID>_region`, so it can still be
+  overridden per apply with `TF_VAR` without editing the chart.
+- **`ssh_public_key` / `ssh_public_key_file`** — the key every host in the account trusts unless it
+  sets one of its own. See the six-source resolution order in `TOFU-MAPPING.md`.
 
 ## Asset
 

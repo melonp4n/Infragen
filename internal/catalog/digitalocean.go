@@ -11,7 +11,12 @@ func init() {
 		Dim:           "#26305C",
 		TofuLocalName: "digitalocean",
 		TofuSource:    "digitalocean/digitalocean",
-		NameArg:       "name",
+		// DigitalOcean has no provider-level region, but the account's VPC needs
+		// one, and it is what a resource's own region should agree with.
+		AccountParams: AccountSettings([]string{
+			"lon1", "ams3", "fra1", "nyc1", "nyc3", "sfo3", "sgp1",
+		}, "lon1"),
+		NameArg: "name",
 		// The DigitalOcean provider takes no region; resources carry their own.
 		Types: []ResourceType{
 			{

@@ -50,6 +50,12 @@ type ParamField struct {
 	// argument. ParamStaticPublicIP is one: aws_instance has no such argument, so
 	// emitting it verbatim would produce invalid configuration.
 	Directive bool `json:"directive,omitempty"`
+
+	// RequiresParam emits this argument, and shows the field, only when the named
+	// boolean directive is on. It exists for a block a resource may not accept at
+	// all: an instance-store AMI rejects root_block_device outright, so the block
+	// has to be omitted rather than given sensible values.
+	RequiresParam string `json:"requiresParam,omitempty"`
 }
 
 // ParamKey is how this field is keyed in Asset.Params. Two fields can share a
@@ -118,6 +124,11 @@ type Companion struct {
 	Count string `json:"count,omitempty"`
 }
 
+// ParamRootBlockDevice opts an instance into a managed root volume. An
+// instance-store or container-backed AMI has no root EBS volume, and Terraform
+// rejects root_block_device on one, so the whole block must be omitted.
+const ParamRootBlockDevice = "root_block_device"
+
 // ParamStaticPublicIP is the toggle that opts an asset into a durable address.
 // The catalog and the generator both need the key, so it is named once here.
 const ParamStaticPublicIP = "static_public_ip"
@@ -167,6 +178,64 @@ func StaticAddressToggle() ParamField {
 		Key: ParamStaticPublicIP, Label: "Static public IP", Type: FieldBoolean,
 		Default: false, Directive: true,
 	}
+}
+
+// ParamRegion is the account-wide region. Every provider has the concept; only
+// the spelling of the values differs, which is why it is one key.
+const ParamRegion = "region"
+
+// AccountSettings returns the params every account gets. The region list is the
+// provider's own, because "eu-west-2" and "uksouth" name the same place.
+//
+// The two key fields are account-wide defaults. An asset that sets its own key
+// overrides them, and an unset account key falls through to the deployment-wide
+// Terraform variable — see sshKeyExpr in internal/tofu/ansible.go for the order.
+// Nil regions omits the region field, for a provider that has no account-wide
+// region to set — DigitalOcean picks one per resource, so an account-level one
+// there would be a setting that changes nothing.
+func AccountSettings(regions []string, defaultRegion string) []ParamField {
+	var out []ParamField
+	if regions != nil {
+		out = append(out, ParamField{
+			Key: ParamRegion, Label: "Region", Type: FieldSelect,
+			Options: regions, Default: defaultRegion, Directive: true,
+		})
+	}
+	return append(out,
+		ParamField{Key: ParamSSHPublicKey, Label: "Default SSH public key", Type: FieldScript, Default: "", Directive: true},
+		ParamField{Key: ParamSSHPublicKeyFile, Label: "Default SSH public key file", Type: FieldText, Default: "", Directive: true},
+	)
+}
+
+// Region returns an account's configured region, or the provider's default when
+// the chart has none. The generator needs a value regardless: the region variable
+// is always declared, because a provider block with no region will not plan.
+func (p Provider) Region(params map[string]any) string {
+	for _, f := range p.AccountParams {
+		if f.Key != ParamRegion {
+			continue
+		}
+		if v, ok := params[ParamRegion].(string); ok && v != "" {
+			return v
+		}
+		if d, ok := f.Default.(string); ok {
+			return d
+		}
+	}
+	return ""
+}
+
+// AccountDefaults seeds a new account's params from its provider.
+func AccountDefaults(provider string) map[string]any {
+	p, ok := Get(provider)
+	if !ok {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(p.AccountParams))
+	for _, f := range p.AccountParams {
+		out[f.ParamKey()] = f.Default
+	}
+	return out
 }
 
 // How a resource is reached, and what governs access to it. This decides whether
@@ -226,6 +295,11 @@ type ResourceType struct {
 	AddressKind string         `json:"addressKind,omitempty"`
 	StaticAddr  *StaticAddress `json:"staticAddr,omitempty"`
 
+	// AddressRequires names a boolean param that must be on before AddressAttr
+	// holds anything. An unset address attribute is empty rather than an error,
+	// so without this an inventory line came out blank and an apply looked fine.
+	AddressRequires string `json:"addressRequires,omitempty"`
+
 	Params []ParamField `json:"params"`
 }
 
@@ -255,6 +329,12 @@ type Provider struct {
 	Config []Fixed `json:"config,omitempty"`
 	// Variables the provider block itself needs, such as a GCP project ID.
 	Variables []Variable `json:"variables,omitempty"`
+
+	// AccountParams are the settings that belong to a whole account rather than
+	// to one resource: where it deploys, and the key its hosts trust. Same
+	// ParamField shape as a resource type's, so the drawer renders them with the
+	// existing form and adding one needs no new markup.
+	AccountParams []ParamField `json:"accountParams,omitempty"`
 
 	Types []ResourceType `json:"types"`
 }

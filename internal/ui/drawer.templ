@@ -23,6 +23,8 @@ templ Drawer(s model.Session, sel Selection) {
   switch sel.Kind {
     case "conn":
       @connPanel(s, sel)
+    case "account":
+      @accountPanel(s, sel)
     case "asset":
       @assetPanel(s, sel)
     case "extip":
@@ -111,6 +113,33 @@ templ ruleRow(dir string, index int, r model.Rule, result *tofu.Outcome) {
   }
 }
 
+// ---- account ---------------------------------------------------------------
+
+// accountPanel edits what belongs to a whole account rather than to one resource:
+// where it deploys, and the key its hosts trust. The fields come from the catalog
+// and render through paramField, so adding one is a catalog edit.
+templ accountPanel(s model.Session, sel Selection) {
+  if acc := s.Account(sel.AccountID); acc != nil {
+    {{ p, _ := catalog.Get(acc.Provider) }}
+    @drawerFrame(acc.Name, flagInfo{Class: "flag-provider", Text: providerLabel(acc.Provider) + " account"}, "Delete account") {
+      <div>
+        <div class="field-row asset-name-field">
+          <label class="field-label" for="account-display-name">Account name</label>
+          <input type="text" id="account-display-name" value={ acc.Name }/>
+        </div>
+        for _, f := range p.AccountParams {
+          @paramField(f, acc.Params[f.ParamKey()])
+        }
+        <div class="note-box" style="margin-top:4px">
+          The region is the default for everything in this account. A key set here is
+          used by every host in the account that has none of its own, and is overridden
+          in turn by <code>TF_VAR_{ acc.ID }_ssh_public_key</code> at apply time.
+        </div>
+      </div>
+    }
+  }
+}
+
 // ---- asset -----------------------------------------------------------------
 
 templ assetPanel(s model.Session, sel Selection) {
@@ -129,7 +158,7 @@ templ assetPanel(s model.Session, sel Selection) {
           if len(t.Params) == 0 {
             <div class="rule-empty">No configurable parameters for this resource type.</div>
           }
-          {{ essential, advanced := splitParams(t.Params) }}
+          {{ essential, advanced := splitParams(t.Params, a.Params) }}
           for _, f := range essential {
             @paramField(f, a.Params[f.ParamKey()])
           }

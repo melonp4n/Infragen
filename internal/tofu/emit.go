@@ -185,23 +185,13 @@ func providerBlock(w *writer, p catalog.Provider, acc model.Account, vars *varSe
 		})
 	}
 	w.blank()
+	// The variable stays even though the chart now supplies a value, so a region
+	// can still be overridden per apply with TF_VAR without editing the chart.
 	w.block(fmt.Sprintf("variable %q", acc.ID+"_region"), func() {
 		w.arg("description", quote("Region for "+acc.Name))
 		w.arg("type", "string")
-		w.arg("default", quote(defaultRegion(p.Key)))
+		w.arg("default", quote(p.Region(acc.Params)))
 	})
-}
-
-func defaultRegion(provider string) string {
-	switch provider {
-	case "aws":
-		return "eu-west-2"
-	case "azure":
-		return "uksouth"
-	case "gcp":
-		return "europe-west2"
-	}
-	return "nyc3"
 }
 
 // scaffold emits the network each provider needs before anything can be attached
@@ -307,6 +297,11 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	// Arguments(), not Params: directives such as static_public_ip are not
 	// arguments on any resource and would make the configuration invalid.
 	for _, f := range rt.Arguments() {
+		// Same gate as Fixed and Companions below. An argument in a block the
+		// resource does not accept is a plan error, not a harmless extra.
+		if !required(f.RequiresParam, a) {
+			continue
+		}
 		v := a.Params[f.ParamKey()]
 		// An unwritten script is absence, not an empty script. Emitting it would
 		// produce user_data = "" and, worse, base64encode("") on Azure.
@@ -331,7 +326,7 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 		}
 	}
 	if ansibleOn(&a) {
-		keyPrecondition(root, acc.ID, &a)
+		keyPrecondition(root, acc, &a)
 	}
 	if guarded {
 		attach(root, acc, a, rt)
@@ -372,6 +367,12 @@ func companionResource(w *writer, p catalog.Provider, acc model.Account, a model
 	}
 	node.add("", "provider", p.TofuLocalName+"."+acc.ID)
 	for _, fx := range c.Fixed {
+		// Same gate as an asset's own fixed arguments. Without it a conditional
+		// argument inside a companion was emitted unconditionally — which is how
+		// Azure's public IP came out allocated but never attached.
+		if !required(fx.RequiresParam, a) {
+			continue
+		}
 		addFixed(node, fx, ctx)
 	}
 	w.blank()
@@ -503,14 +504,14 @@ func staticAddress(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 			w.arg("resource_group_name", fmt.Sprintf("azurerm_resource_group.%s.name", acc.ID))
 			w.arg("allocation_method", quote("Static"))
 		})
-		w.line("# Attach this to the machine's network interface.")
+		w.line("# The machine's network interface references this.")
 	case "gcp":
 		w.block(fmt.Sprintf("resource %q %q", "google_compute_address", a.ID), func() {
 			w.arg("provider", "google."+acc.ID)
 			w.arg("name", quote(dashed(a.ID)))
 			w.arg("region", "var."+acc.ID+"_region")
 		})
-		w.line("# Reference this from the instance's access_config nat_ip.")
+		w.line("# The instance's access_config nat_ip references this.")
 	}
 }
 

@@ -18,6 +18,9 @@ func init() {
 			{Key: "region", Expr: "{{region}}"},
 			{Key: "project", Expr: "var.{{account}}_project"},
 		},
+		AccountParams: AccountSettings([]string{
+			"europe-west1", "europe-west2", "europe-west4", "us-central1", "us-east1", "asia-southeast1",
+		}, "europe-west2"),
 		Variables: []Variable{{
 			Name: "{{account}}_project", Description: "GCP project ID", Default: `"my-project"`,
 		}},
@@ -27,8 +30,15 @@ func init() {
 				Network: NetFirewalled, AddressKind: AddrEphemeralIP,
 				AddressAttr: "network_interface[0].access_config[0].nat_ip",
 				StaticAddr:  &StaticAddress{TofuType: "google_compute_address", Attr: "address"},
+				// No access_config means no public address at all, and the attribute
+				// above would index a block that does not exist.
+				AddressRequires: ParamStaticPublicIP,
 				Fixed: []Fixed{
 					{Block: "network_interface", Key: "subnetwork", Expr: "google_compute_subnetwork.{{account}}.id"},
+					// access_config is what gives the instance a public address, and
+					// nat_ip is what makes that address the reserved one.
+					{Block: "network_interface.access_config", Key: "nat_ip",
+						Expr: "google_compute_address.{{asset}}.address", RequiresParam: ParamStaticPublicIP},
 					{Key: "metadata",
 						Expr: `{{sshkey}} != "" ? { ssh-keys = "{{sshuser}}:${{{sshkey}}}" } : {}`},
 				},

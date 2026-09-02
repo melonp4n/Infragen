@@ -267,17 +267,6 @@ func TestWarnsWhenBothKeySourcesAreSet(t *testing.T) {
 	}
 }
 
-// A host with an address that changes on restart cannot go in an inventory, and
-// the reason is the same one that stops a firewall rule naming it.
-func TestWarnsWhenAnsibleHostHasNoUsableAddress(t *testing.T) {
-	_, _, warnings := ansibleSeed(t, func(a *model.Asset) {
-		a.Params[catalog.ParamStaticPublicIP] = false
-	})
-	if !strings.Contains(joined(warnings), "changes when the instance restarts") {
-		t.Errorf("no address warning: %v", warnings)
-	}
-}
-
 // The inventory groups by name across accounts and providers, and is written by
 // Terraform rather than by infrachart.
 func TestInventoryGroupsAcrossProviders(t *testing.T) {
@@ -334,17 +323,63 @@ func TestUngroupedAnsibleHost(t *testing.T) {
 	}
 }
 
-// A host that cannot be addressed is left out rather than written as a broken
-// line — the warning has already explained why.
-func TestUnreachableHostIsOmittedFromInventory(t *testing.T) {
+// An ephemeral address is fine in an inventory, and this is the case that made the
+// feature look broken: an AWS-only chart produced no inventory at all, because the
+// firewall rule's address test was wrongly reused here.
+//
+// The inventory is regenerated on every apply, so it always holds the current
+// address. A firewall rule is not, which is why that one refuses.
+func TestEphemeralAddressIsUsableInInventory(t *testing.T) {
 	_, hcl, warnings := ansibleSeed(t, func(a *model.Asset) {
-		a.Params[catalog.ParamStaticPublicIP] = false // address changes on restart
+		a.Params[catalog.ParamStaticPublicIP] = false
+		// The instance still has to have a public address for there to be an
+		// ephemeral one to test — see TestHostWithNoPublicAddressIsRefused.
+		a.Params["associate_public_ip_address"] = true
 	})
-	if strings.Contains(hcl, "ansible_user=ec2-user") {
-		t.Error("an unaddressable host was written into the inventory")
+	if !strings.Contains(hcl, "${aws_instance.asset_3.public_ip} ansible_user=ec2-user") {
+		t.Errorf("host with an ephemeral address was dropped from the inventory:\n%s", hcl)
 	}
-	if !strings.Contains(joined(warnings), "changes when the instance restarts") {
-		t.Errorf("host was dropped without saying why: %v", warnings)
+	if strings.Contains(joined(warnings), "changes when the instance restarts") {
+		t.Errorf("warned about an address that is fine for an inventory: %v", warnings)
+	}
+}
+
+// An address attribute that is never populated is not an address. aws_instance's
+// public_ip is empty on an instance with no public IP, so an unguarded reference
+// wrote an inventory line with nothing in the address column — and an apply that
+// looked like it had worked.
+func TestHostWithNoPublicAddressIsRefused(t *testing.T) {
+	_, hcl, warnings := ansibleSeed(t, func(a *model.Asset) {
+		a.Params[catalog.ParamStaticPublicIP] = false
+		a.Params["associate_public_ip_address"] = false
+	})
+	if strings.Contains(hcl, "aws_instance.asset_3.public_ip} ansible_user") {
+		t.Errorf("emitted an inventory line for a host with no public address:\n%s", hcl)
+	}
+	// The warning has to name what the user clicks, not the HCL argument.
+	if !strings.Contains(joined(warnings), `turn on "Assign public IP"`) {
+		t.Errorf("no warning naming the field to turn on: %v", warnings)
+	}
+}
+
+// A durable address is preferred when there is one, so the inventory does not
+// change between applies.
+func TestStaticAddressPreferredInInventory(t *testing.T) {
+	_, hcl, _ := ansibleSeed(t, nil) // the helper enables the static toggle
+	if !strings.Contains(hcl, "${aws_eip.asset_3.public_ip}") {
+		t.Error("static address not preferred over the instance's own")
+	}
+}
+
+// The only genuinely unusable case: a type with no address attribute at all.
+// Unreachable today, since Ansible is limited to types that all have one — kept
+// as a guard for whatever gets added next.
+func TestHostWithNoAddressIsRefused(t *testing.T) {
+	acc := model.Account{ID: "acc_1", Provider: "aws"}
+	// ECS has Network firewalled but no address attribute.
+	a := model.Asset{ID: "asset_x", Code: "ECS", Name: "Service"}
+	if _, err := hostAddress(acc, &a); err == nil {
+		t.Error("a type with no address was accepted into the inventory")
 	}
 }
 
@@ -359,5 +394,39 @@ func TestNoInventoryWithoutAnsible(t *testing.T) {
 		if strings.Contains(hcl, bad) {
 			t.Errorf("emitted %q for a chart with no Ansible hosts", bad)
 		}
+	}
+}
+
+// An account's own settings reach generation: the region becomes the variable's
+// default, and the account key is what a host with none of its own resolves to.
+//
+// Both were previously Terraform variables with nothing in the chart behind them,
+// so a region could only be set with TF_VAR and never saved with the session.
+func TestAccountSettingsReachGeneration(t *testing.T) {
+	s := model.Seed()
+	acc := &s.Accounts[0]
+	a := &acc.Assets[2] // Web tier EC2
+	a.Params[catalog.ParamAnsible] = true
+	a.Params[catalog.ParamAnsibleGroup] = "web"
+	a.Params["associate_public_ip_address"] = true
+	acc.Params[catalog.ParamRegion] = "us-east-1"
+	acc.Params[catalog.ParamSSHPublicKey] = "ssh-ed25519 AAAAaccountkey"
+
+	hcl, warnings := generate(t, s)
+
+	if !strings.Contains(collapse(hcl), `variable "`+acc.ID+`_region" { description = "Region for `+acc.Name+`" type = string default = "us-east-1"`) {
+		t.Errorf("account region did not reach the region variable:\n%s", hcl)
+	}
+	// Ahead of both variables, because a chart value is knowable here.
+	if !strings.Contains(hcl, `"ssh-ed25519 AAAAaccountkey", var.`+acc.ID+`_ssh_public_key`) {
+		t.Errorf("account key is not a source for a host with no key of its own:\n%s", hcl)
+	}
+	// The precondition exists to catch a host with no key from anywhere. The
+	// account supplies one, so it would only ever fail on a false alarm.
+	if strings.Contains(hcl, "no SSH public key is set") {
+		t.Error("kept the no-key precondition on a host whose account supplies a key")
+	}
+	if j := joined(warnings); strings.Contains(j, "SSH") {
+		t.Errorf("unexpected SSH warning: %v", warnings)
 	}
 }

@@ -16,6 +16,7 @@ func EveryType() Session {
 			ID:       "acc_" + p.Key,
 			Name:     p.Label,
 			Provider: p.Key,
+			Params:   catalog.AccountDefaults(p.Key),
 			X:        float64(60 + n*380),
 			Y:        120,
 		}

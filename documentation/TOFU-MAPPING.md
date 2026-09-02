@@ -198,7 +198,7 @@ Applied as the `Default` on ordinary editable fields.
 
 | Area | Setting |
 |---|---|
-| AWS EC2 | `metadata_options { http_tokens = "required" }` (IMDSv2), `root_block_device { encrypted = true }`, no public IP |
+| AWS EC2 | `metadata_options { http_tokens = "required" }` (IMDSv2), `root_block_device { encrypted = true }` with the block managed by default, no public IP |
 | AWS S3 | public access block all four flags, SSE encryption, versioning enabled |
 | AWS RDS | `storage_encrypted = true`, `publicly_accessible = false`, `manage_master_user_password = true`, `auto_minor_version_upgrade = true` |
 | AWS ALB | `drop_invalid_header_fields = true` |
@@ -210,6 +210,20 @@ Applied as the `Default` on ordinary editable fields.
 | GCP GKE | `remove_default_node_pool = true`, workload identity, shielded nodes |
 | GCE | no external IP unless the static-address toggle is on, shielded VM config |
 | DigitalOcean | droplet `ssh_keys` not password, `monitoring = true`, Spaces `acl = "private"` |
+
+### `root_block_device` is not always valid
+
+A container-backed or instance-store AMI has no root EBS volume, and Terraform **rejects
+`root_block_device` on one** rather than ignoring it. So the two fields inside it are gated on a
+`Manage root volume` directive (`ParamRootBlockDevice`), and the whole block is omitted when it is
+off.
+
+The gate defaults **on**, which matters here: `encrypted = true` is the secure default in the table
+above, and a gate defaulting off would quietly drop root volume encryption from every new instance.
+The AMI that cannot take the block is the minority case, so it is the one that opts out.
+
+`ParamField.RequiresParam` is the mechanism, and it hides the fields in the drawer as well as
+omitting the arguments — see `CATALOG.md`.
 
 ### Destruction controls
 
@@ -462,9 +476,45 @@ key. Ansible configuration is the user's own.
 `Normalise` strips control characters from a text param, and the section-name check rejects
 brackets, spaces and `${`. Keep both — the first is incidental, the second is the deliberate one.
 
-**A host with no usable address is left out**, not written as a broken line. `ansibleWarnings` has
-already explained why for each one. That reuses `addressExpr`, the same code that decides whether a
-firewall rule can name a host — they are the same question.
+**Inventory addresses follow different rules from firewall rules, and `hostAddress` must not be
+merged back into `addressExpr`.** They look like the same question and are not:
+
+| | Firewall rule | Inventory |
+|---|---|---|
+| Lifetime | persists in state | rewritten on every apply |
+| Ephemeral IP | **refused** — the rule goes stale as the address moves | **fine** — always current |
+| Hostname | refused — a security group needs an address | fine — Ansible connects to names |
+| No address attribute | refused | refused; nothing to write |
+| Attribute that exists but is never populated | refused | **refused** — see below |
+
+Merging them was a real bug: an AWS-only chart with Ansible enabled produced **no inventory at all**,
+because an EC2 without a static IP was rejected on the firewall rule's grounds. A durable address is
+still preferred where one exists, so the inventory does not churn between applies, but an ephemeral
+one is used rather than refused.
+
+### An unpopulated address attribute is not an address
+
+An address attribute is only populated when the resource actually has that kind of address, and
+where it does not, Terraform yields an **empty string rather than an error**. So a reference that
+looks correct writes an inventory line with nothing in the address column, and the apply succeeds.
+
+`ResourceType.AddressRequires` names the boolean param that has to be on first. Three types need it:
+
+| Type | Requires | Why |
+|---|---|---|
+| `aws_instance` | `associate_public_ip_address` | `public_ip` is empty on an instance with no public address, and that is the default |
+| `azurerm_linux_virtual_machine` | `static_public_ip` | the generated NIC only gets `public_ip_address_id` when the static toggle is on |
+| `google_compute_instance` | `static_public_ip` | without an `access_config` block there is no public address, and `access_config[0]` would index a block that does not exist |
+
+`hostAddress` refuses when the gate is off and the warning names the **field label** — "turn on
+`Assign public IP`" — because that is what the user clicks. An HCL argument name is not something
+they ever see in the drawer.
+
+The static toggle now attaches the address as well as allocating it. It previously emitted the
+address resource with a comment saying to attach it by hand, which meant enabling the toggle on
+Azure or GCP produced a reserved address that nothing used. The attachment is a `Fixed` with
+`RequiresParam` set, and `companionResource` honours that gate — it did not, which is how the Azure
+case survived.
 
 ### Providers that come from features, not accounts
 
@@ -518,22 +568,30 @@ is the user's to create and supply.
 
 ### How a key is resolved
 
-Four sources, first non-empty wins. The two per-resource ones are chart fields and resolve to
-literals; the two broader ones are Terraform variables, because infrachart cannot see their values.
+Six sources, first non-empty wins. The four chart ones — two on the asset, two on the account —
+resolve to literals here, because their values are in the session. The last two are Terraform
+variables, because infrachart cannot see what they will be set to.
 
 | Source | Emits |
 |---|---|
 | `ssh_public_key` on the asset — pasted | the literal string |
 | `ssh_public_key_file` on the asset — a path | `file("/path/to/key.pub")` |
-| `var.<account>_ssh_public_key` | the account default |
-| `var.ssh_public_key` | the deployment default |
+| `ssh_public_key` on the account — pasted | the literal string |
+| `ssh_public_key_file` on the account — a path | `file("/path/to/key.pub")` |
+| `var.<account>_ssh_public_key` | the account default, set at apply time |
+| `var.ssh_public_key` | the deployment default, set at apply time |
 
 ```hcl
-coalesce(file("/path/to/key.pub"), var.acc_1_ssh_public_key, var.ssh_public_key)
+coalesce(file("/path/to/key.pub"), "ssh-ed25519 AAAA…", var.acc_1_ssh_public_key, var.ssh_public_key)
 ```
 
-Only the sources actually set appear, so a host with no per-resource key emits just the two
-variables. Setting both per-resource fields is a warning rather than a silent precedence rule.
+Only the sources actually set appear, so a host in an account with no key of its own emits just
+the two variables. Setting both per-resource fields is a warning rather than a silent precedence
+rule.
+
+The account key also decides whether the no-key precondition is emitted at all. When the account
+supplies one, every host in it resolves a key at generation time, so the plan-time check would only
+ever be a false alarm.
 
 **Every machine gets key wiring, whether or not Ansible is involved.** Wanting to SSH into a host is
 not the same want as wanting Ansible to configure it, and key wiring was originally gated on the

@@ -138,6 +138,13 @@ templ generateModal() {
       <div class="modal-head">
         <div class="modal-head-title">main.tf</div>
         <div class="modal-head-actions">
+          <div class="toolbtn" id="btn-copy-tf" title="Copy the whole configuration to the clipboard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+              <path d="M5 15V5a2 2 0 0 1 2-2h8"></path>
+            </svg>
+            <span data-copy-label>Copy</span>
+          </div>
           <div class="toolbtn" id="btn-validate" title="Run tofu init and validate on this configuration">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"></path></svg>
             Validate

@@ -106,7 +106,7 @@ internal/catalog/{aws,azure,gcp,digitalocean}.go   one file per provider
 internal/tofu/                   HCL generation (phase 6)
 internal/ui/page.templ           document shell, topbar, static panels, type menus
 internal/ui/node.templ           account card, asset tile, internet node, external IP node
-internal/ui/drawer.templ         connection rules, asset params, external IP panel
+internal/ui/drawer.templ         connection rules, account settings, asset params, external IP panel
 internal/ui/drawer.go            drawer helper functions (exposure classification, formatting)
 internal/ui/style.go             per-provider CSS custom properties, built from the catalog
 web/static/app.js                drag, connectors, line drawing, selection, state

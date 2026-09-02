@@ -17,11 +17,17 @@ func init() {
 		TofuSource:    "hashicorp/aws",
 		LabelArg:      "tags",
 		Config:        []Fixed{{Key: "region", Expr: "{{region}}"}},
+		AccountParams: AccountSettings([]string{
+			"eu-west-1", "eu-west-2", "eu-central-1", "us-east-1", "us-west-2", "ap-southeast-1",
+		}, "eu-west-2"),
 		Types: []ResourceType{
 			{
 				Code: "EC2", Name: "EC2 instance", TofuType: "aws_instance",
 				Network: NetFirewalled, AddressAttr: "public_ip", AddressKind: AddrEphemeralIP,
 				StaticAddr: &StaticAddress{TofuType: "aws_eip", Attr: "public_ip"},
+				// public_ip is empty on an instance with no public address, which is
+				// the default. Without this the inventory got a blank line.
+				AddressRequires: "associate_public_ip_address",
 				Fixed: []Fixed{
 					{Key: "subnet_id", Expr: "aws_subnet.{{account}}.id"},
 				},
@@ -47,8 +53,13 @@ func init() {
 					// the instance credentials.
 					{Key: "http_tokens", Block: "metadata_options", Label: "IMDS tokens", Type: FieldSelect, Options: []string{"required", "optional"}, Default: "required", Advanced: true},
 					{Key: "user_data", Label: "Startup script", Type: FieldScript, Default: "", Advanced: true},
-					{Key: "volume_size", Block: "root_block_device", Label: "Root volume (GB)", Type: FieldNumber, Default: 20, Advanced: true},
-					{Key: "encrypted", Block: "root_block_device", Label: "Encrypt root volume", Type: FieldBoolean, Default: true, Advanced: true},
+					// On by default, because most AMIs are EBS-backed and the encryption
+					// default below is a security default worth keeping. Turn it off for a
+					// container-backed or instance-store AMI, which has no root EBS volume
+					// and rejects the block outright.
+					{Key: ParamRootBlockDevice, Label: "Manage root volume", Type: FieldBoolean, Default: true, Directive: true, Advanced: true},
+					{Key: "volume_size", Block: "root_block_device", Label: "Root volume (GB)", Type: FieldNumber, Default: 20, Advanced: true, RequiresParam: ParamRootBlockDevice},
+					{Key: "encrypted", Block: "root_block_device", Label: "Encrypt root volume", Type: FieldBoolean, Default: true, Advanced: true, RequiresParam: ParamRootBlockDevice},
 				}, sshAndAnsible("ec2-user")...),
 			},
 			{

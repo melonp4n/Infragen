@@ -29,7 +29,10 @@ type Account struct {
 	Provider string  `json:"provider"`
 	X        float64 `json:"x"`
 	Y        float64 `json:"y"`
-	Assets   []Asset `json:"assets"`
+	// Params are the account-wide settings, keyed by catalog.Provider.AccountParams.
+	// Region and the default SSH key live here rather than on every asset.
+	Params map[string]any `json:"params"`
+	Assets []Asset        `json:"assets"`
 }
 
 // Asset is one deployable resource. Code keys into the provider's catalog, and

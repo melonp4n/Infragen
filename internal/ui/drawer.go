@@ -137,8 +137,15 @@ func noteText(o tofu.Outcome) string {
 // splitParams divides a type's fields into those shown immediately and those
 // behind the disclosure. Directives stay with the essential set: they change what
 // gets generated, so hiding them would bury a real decision.
-func splitParams(fields []catalog.ParamField) (essential, advanced []catalog.ParamField) {
+//
+// params is the asset's own values, needed because a field gated by RequiresParam
+// is not shown at all when its gate is off. Rendering one would invite a value
+// that generation then drops, which is worse than not offering it.
+func splitParams(fields []catalog.ParamField, params map[string]any) (essential, advanced []catalog.ParamField) {
 	for _, f := range fields {
+		if f.RequiresParam != "" && !truthy(params[f.RequiresParam]) {
+			continue
+		}
 		if f.Advanced && !f.Directive {
 			advanced = append(advanced, f)
 			continue

@@ -426,3 +426,39 @@ func TestEmptyScriptIsOmitted(t *testing.T) {
 		}
 	}
 }
+
+// An instance-store or container-backed AMI has no root EBS volume, and Terraform
+// rejects root_block_device on one. So the block has to be omitted entirely rather
+// than emitted with sensible values.
+func TestRootBlockDeviceIsOptional(t *testing.T) {
+	ec2 := func(managed bool) string {
+		s := model.Seed()
+		a := &s.Accounts[0].Assets[2]
+		if a.Code != "EC2" {
+			t.Fatalf("fixture moved: expected EC2, got %q", a.Code)
+		}
+		a.Params[catalog.ParamRootBlockDevice] = managed
+		hcl, _ := generate(t, s)
+		i := strings.Index(hcl, `resource "aws_instance" "`+a.ID+`"`)
+		if i < 0 {
+			t.Fatalf("no aws_instance block for %s", a.ID)
+		}
+		return hcl[i : i+strings.Index(hcl[i:], "\n}\n")]
+	}
+
+	off := ec2(false)
+	if strings.Contains(off, "root_block_device") {
+		t.Errorf("emitted root_block_device with the toggle off:\n%s", off)
+	}
+	// The directive itself is not an argument on aws_instance either.
+	if strings.Contains(off, catalog.ParamRootBlockDevice+" =") {
+		t.Errorf("emitted the directive as an argument:\n%s", off)
+	}
+
+	on := ec2(true)
+	for _, want := range []string{"root_block_device {", "volume_size = 20", "encrypted   = true"} {
+		if !strings.Contains(collapse(on), collapse(want)) {
+			t.Errorf("missing %q with the toggle on:\n%s", want, on)
+		}
+	}
+}

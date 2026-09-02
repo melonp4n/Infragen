@@ -554,7 +554,7 @@ provider "digitalocean" {
 variable "acc_digitalocean_region" {
   description = "Region for DigitalOcean"
   type        = string
-  default     = "nyc3"
+  default     = "lon1"
 }
 
 resource "digitalocean_vpc" "acc_digitalocean" {

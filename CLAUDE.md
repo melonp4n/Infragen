@@ -66,6 +66,9 @@ nothing more, which is how fifteen invented parameters survived until someone ac
 - **Never generate an SSH key, in the app or in Terraform.** A public key is the user's to supply.
   `tls_private_key` would put the private half in state in plaintext, and ephemeral resources cannot
   substitute — see the ruled-out investigation in `TOFU-MAPPING.md` before proposing it again.
+- **An inventory address and a firewall-rule address are different questions.** A rule persists
+  while the address moves, so an ephemeral IP makes it stale. An inventory is rewritten every apply,
+  so an ephemeral IP is correct there. Merging the two silently produced no inventory at all.
 - **Declare a Terraform variable from the reference, not from the flag that usually implies it.**
   The SSH key variables were declared when Ansible was on, which left a plain Azure VM — which needs
   a key regardless — referencing variables that did not exist.
@@ -86,3 +89,16 @@ nothing more, which is how fifteen invented parameters survived until someone ac
   If a type needs special-casing, extend the catalog model instead.
 - **Nil slices marshal to JSON `null`, and the browser expects arrays.** Anything that hands a
   session to the browser goes through `model.Normalise` first.
+- **An address attribute that exists is not an address that is populated.** `aws_instance.public_ip`
+  is an empty string on an instance with no public IP, so a reference to it writes a blank inventory
+  line and the apply succeeds. `ResourceType.AddressRequires` names the toggle that has to be on
+  first; a warning that names the field label is the fix, not a reference that silently resolves to
+  nothing.
+- **Some blocks are not optional-with-defaults, they are invalid.** `root_block_device` on an
+  instance-store AMI is rejected outright, so sensible values do not help — the block must be
+  absent. That is `ParamField.RequiresParam`, and such a gate defaults **on** where the fields it
+  guards carry a security default (`encrypted`), so opting out is the deliberate act.
+- **A toggle that allocates something must also attach it.** Enabling a static public IP on Azure or
+  GCP emitted the address resource and a comment saying to wire it up by hand, which is a setting
+  that appears to work and does nothing. Attachment is a `Fixed` with `RequiresParam`, and every
+  place that walks `Fixed` has to honour that gate — `companionResource` did not.

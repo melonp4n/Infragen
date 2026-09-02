@@ -213,6 +213,45 @@ emitter now writes an `azurerm_network_interface_security_group_association` alo
 `attachmentGaps()` stays. It currently reports nothing, which is the point — it names anything a
 future type leaves unwired rather than letting the output look complete.
 
+## Done — account settings, and addresses that are actually populated
+
+Completed 2026-08-31, from two reports against the Ansible work.
+
+**Inventory lines came out blank for EC2 hosts.** `aws_instance.public_ip` is an empty string on an
+instance with no public address, and `associate_public_ip_address` defaults to `false` — so the
+inventory named an attribute that resolved to nothing and the apply succeeded. The same class of bug
+was latent on Azure and GCP, and worse there: the generated NIC never received a public IP, and
+`google_compute_instance` had no `access_config` block at all, so the address expression indexed a
+block that did not exist.
+
+| Change | State |
+|---|---|
+| `ResourceType.AddressRequires`, and `hostAddress` refusing when the gate is off | **done** |
+| Warning names the drawer field label, not the HCL argument | **done** |
+| Static toggle attaches the address on Azure (`public_ip_address_id`) and GCP (`access_config.nat_ip`) | **done** |
+| `companionResource` honours `Fixed.RequiresParam`, which it previously ignored | **done** |
+| `everytype-static` integration case: every type with a `StaticAddr`, with one | **done** |
+
+**An account could not be configured at all.** Region and SSH key existed only as Terraform
+variables, so neither could be saved with a session.
+
+| Change | State |
+|---|---|
+| `Provider.AccountParams`, `AccountSettings()`, `Provider.Region()` | **done** |
+| `Account.Params`, normalised and coerced like an asset's | **done** |
+| Account panel in the drawer, reached from a gear in the card header | **done** |
+| Account key as a source in `sshKeyExpr`, ahead of both variables | **done** |
+| Account region as the default of `var.<accountID>_region` | **done** |
+
+The account key also suppresses the no-key precondition, which would otherwise be a check that can
+only ever raise a false alarm. `defaultRegion()` is gone — it was a `switch` on provider inside
+`internal/tofu`, which the catalog now owns.
+
+Verified with `go test -tags integration ./internal/tofu` against real providers, and by hand:
+setting a region and an account key in the drawer, generating, and confirming the region reaches the
+variable default, the key becomes the first `coalesce` source for hosts in that account only, and an
+Ansible EC2 moves from a warning to a populated inventory line when the public IP is turned on.
+
 ## Deliberately out of scope
 
 Undo/redo, canvas zoom and pan, multi-user editing, authentication, a database, server-side

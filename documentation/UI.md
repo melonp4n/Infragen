@@ -97,6 +97,11 @@ fighting that for two numbers is not worth it — and so one code path owns posi
   the empty area inside an account card.
 - **Select** by clicking an asset tile, an external IP, or a connection line. Selection opens
   the drawer. A drag of under 4px counts as a click.
+- **Edit an account** with the gear button in the card header, which opens the account panel in
+  the drawer: region, and the default SSH key for every host in the account. It is an explicit
+  button rather than a click on the header, because the header is the drag handle — telling a
+  click from the start of a drag needs a threshold, and a button needs none. `.account-settings`
+  is excluded from the drag handler for the same reason as `.account-name`.
 - **Delete** via the ✕ on a node, or the Delete button in the drawer. Deleting a node also
   drops any connection that referenced it — a dangling `NodeRef` would fail import validation
   later.
@@ -117,11 +122,12 @@ These names are the interface between the two — changing one means changing bo
 | `.extip-node[data-extip-id]` | hardcoded address node |
 | `.internet-node` | the public network node |
 | `.connector[data-node]` | connection handle; `data-node` is the `NodeRef.Key()` string |
+| `.account-settings` | the gear in the card header; opens the account panel |
 | `.add-tile` | the ✛ tile that opens the type menu |
 | `.type-menu[data-type-menu]` | pre-rendered asset picker, one per provider |
 | `[data-conn-id]` | on SVG paths and chips; identifies the connection |
 | `.rule-row[data-dir][data-index]` | one rule; `data-dir` is `aToB` or `bToA` |
-| `[data-param]` | a parameter input in the drawer; the attribute is the catalog `Key` |
+| `[data-param]` | a parameter input in the drawer; the attribute is the catalog `ParamKey()` |
 
 ## Advanced options disclosure
 
@@ -132,6 +138,11 @@ element with the count in its summary — "Advanced options (9)".
 Native `<details>` rather than a tab or a JavaScript toggle: no state to keep in sync with a
 server-rendered panel, and no new component. The arrow is a CSS `::before` on the summary, since the
 default marker cannot be styled consistently.
+
+**A field gated by a directive is not shown while the gate is off.** `RequiresParam` on a
+`ParamField` means generation will drop the value, so offering the field would invite input that
+goes nowhere. Toggling such a gate is the one param edit that re-renders the panel, since it changes
+which fields exist — see `gatesOtherParams()` in `app.js`.
 
 **Directives are never hidden.** `splitParams()` in `internal/ui/drawer.go` keeps any field with
 `Directive: true` in the visible group even when it is marked `Advanced`. A directive changes what
@@ -159,6 +170,16 @@ they share that directory.
 
 If neither `tofu` nor `terraform` is installed, the strip is red and says which to install — an
 empty red panel would look like a validation failure rather than a missing tool.
+
+### Copying the configuration
+
+The **Copy** button beside it takes the text straight out of `#generate-output`, so it copies what
+the user is looking at rather than asking the server to generate the configuration a second time —
+the two could differ if the chart were edited in between.
+
+Its label lives in a `[data-copy-label]` span so the confirmation swaps only the word, leaving the
+icon in place. Clipboard access can be refused outright, and a silent no-op reads as a copy that
+worked, so the failure path selects the whole `<pre>` and says `Press Ctrl+C` instead.
 
 ## Script fields
 

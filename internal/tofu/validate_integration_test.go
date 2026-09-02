@@ -42,6 +42,10 @@ func TestValidateAgainstRealProviders(t *testing.T) {
 		// The demonstration chart, which unlike EveryType has connections and so
 		// exercises the firewall rules and their attachments.
 		{"seed", model.Seed()},
+		// Every type that can have a durable address, with one. The attachment
+		// differs per cloud — an EIP association, a NIC argument, an access_config
+		// block — and only the real tool proves each of those arguments exists.
+		{"everytype-static", staticEverywhere()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hcl, _ := generate(t, tc.session)
@@ -125,6 +129,27 @@ func TestUserDataValidates(t *testing.T) {
 	if !got.OK {
 		t.Fatalf("a chart with startup scripts failed validation:\n%s", got.Output)
 	}
+}
+
+// staticEverywhere turns on the durable address, and Ansible, for every type that
+// supports one. Ansible comes with it because the inventory is what reads the
+// address back, so a wrongly wired attachment shows up as a broken reference.
+func staticEverywhere() model.Session {
+	s := model.EveryType()
+	for i := range s.Accounts {
+		acc := &s.Accounts[i]
+		for j := range acc.Assets {
+			a := &acc.Assets[j]
+			rt, ok := catalog.Type(acc.Provider, a.Code)
+			if !ok || rt.StaticAddr == nil {
+				continue
+			}
+			a.Params[catalog.ParamStaticPublicIP] = true
+			a.Params[catalog.ParamAnsible] = true
+			a.Params[catalog.ParamAnsibleGroup] = "web"
+		}
+	}
+	return s
 }
 
 // A chart with Ansible hosts must validate: the key pair companions, the metadata

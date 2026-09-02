@@ -16,11 +16,17 @@ func init() {
 		// azurerm takes no region — location is per resource — but the empty
 		// features block is mandatory.
 		Config: []Fixed{{Block: "features"}},
+		AccountParams: AccountSettings([]string{
+			"uksouth", "ukwest", "westeurope", "northeurope", "eastus", "westus2", "southeastasia",
+		}, "uksouth"),
 		Types: []ResourceType{
 			{
 				Code: "VM", Name: "Virtual machine", TofuType: "azurerm_linux_virtual_machine",
 				Network: NetFirewalled, AddressAttr: "public_ip_address", AddressKind: AddrEphemeralIP,
 				StaticAddr: &StaticAddress{TofuType: "azurerm_public_ip", Attr: "ip_address"},
+				// The interface below only gets a public address when the static
+				// toggle is on, so public_ip_address is empty until then.
+				AddressRequires: ParamStaticPublicIP,
 				Fixed: []Fixed{
 					{Key: "name", Expr: `"{{asset-dashed}}"`},
 					{Key: "resource_group_name", Expr: "azurerm_resource_group.{{account}}.name"},
@@ -41,6 +47,10 @@ func init() {
 						{Block: "ip_configuration", Key: "name", Expr: `"internal"`},
 						{Block: "ip_configuration", Key: "subnet_id", Expr: "azurerm_subnet.{{account}}.id"},
 						{Block: "ip_configuration", Key: "private_ip_address_allocation", Expr: `"Dynamic"`},
+						// Attaching the address is what makes it reachable. Emitting the
+						// public IP without this left it allocated and unused.
+						{Block: "ip_configuration", Key: "public_ip_address_id",
+							Expr: "azurerm_public_ip.{{asset}}.id", RequiresParam: ParamStaticPublicIP},
 					},
 					ParentRef:  "network_interface_ids",
 					ParentExpr: "[azurerm_network_interface.{{asset}}_nic.id]",

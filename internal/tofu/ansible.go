@@ -34,12 +34,25 @@ func param(a *model.Asset, key string) string {
 	return strings.TrimSpace(s)
 }
 
+// accountParam reads an account-wide setting's string value.
+func accountParam(acc model.Account, key string) string {
+	s, _ := acc.Params[key].(string)
+	return strings.TrimSpace(s)
+}
+
+// accountHasKey reports whether the account supplies a key its hosts can fall
+// back to.
+func accountHasKey(acc model.Account) bool {
+	return accountParam(acc, catalog.ParamSSHPublicKey) != "" ||
+		accountParam(acc, catalog.ParamSSHPublicKeyFile) != ""
+}
+
 // sshKeyExpr builds the expression that resolves an asset's public key.
 //
 // Four sources, first non-empty wins. The two per-resource ones are chart fields
 // and resolve to literals here; the account and deployment ones are Terraform
 // variables, because their values are not knowable at generation time.
-func sshKeyExpr(accountID string, a *model.Asset) string {
+func sshKeyExpr(acc model.Account, a *model.Asset) string {
 	var sources []string
 	if pasted := param(a, catalog.ParamSSHPublicKey); pasted != "" {
 		sources = append(sources, quote(pasted))
@@ -48,8 +61,16 @@ func sshKeyExpr(accountID string, a *model.Asset) string {
 		// file() fails at plan time on a wrong path, which is the right moment.
 		sources = append(sources, fmt.Sprintf("file(%s)", quote(path)))
 	}
+	// The account's own key comes next, ahead of the variables: it is a chart value,
+	// so it is knowable here and resolves to a literal.
+	if pasted := accountParam(acc, catalog.ParamSSHPublicKey); pasted != "" {
+		sources = append(sources, quote(pasted))
+	}
+	if path := accountParam(acc, catalog.ParamSSHPublicKeyFile); path != "" {
+		sources = append(sources, fmt.Sprintf("file(%s)", quote(path)))
+	}
 	sources = append(sources,
-		"var."+accountID+"_ssh_public_key",
+		"var."+acc.ID+"_ssh_public_key",
 		"var."+deploymentKeyVar,
 		// A final empty fallback so coalesce cannot fail. A host with no key from
 		// any source is a host nobody wants to SSH into, not an error.
@@ -83,7 +104,7 @@ func renderKeyLocals(w *writer, s model.Session) {
 			if !ok || !usesSSHKey(rt, a) {
 				continue
 			}
-			entries = append(entries, entry{a.ID + "_ssh_key", sshKeyExpr(acc.ID, &a)})
+			entries = append(entries, entry{a.ID + "_ssh_key", sshKeyExpr(acc, &a)})
 		}
 	}
 	if len(entries) == 0 {
@@ -146,9 +167,12 @@ func sshKeyVars(accountID, accountName string) []varDecl {
 // This is where "no key" is caught rather than at generation, because infrachart
 // cannot see whether TF_VAR_ssh_public_key is set. The error names the asset and
 // the command, which a generation-time guess could not.
-func keyPrecondition(n *blockNode, accountID string, a *model.Asset) {
+func keyPrecondition(n *blockNode, acc model.Account, a *model.Asset) {
 	if param(a, catalog.ParamSSHPublicKey) != "" || param(a, catalog.ParamSSHPublicKeyFile) != "" {
 		return // a per-resource key is present, so the check would always pass
+	}
+	if accountHasKey(acc) {
+		return // the account supplies one, so every host in it resolves a key
 	}
 	// Built with real quotes and escaped by quote(), rather than hand-escaped: the
 	// message contains the asset name and a shell command, both full of quotes.
@@ -157,7 +181,7 @@ func keyPrecondition(n *blockNode, accountID string, a *model.Asset) {
 		`&& export TF_VAR_ssh_public_key="$(cat ./infrachart-ansible.pub)"`, a.Name)
 
 	n.add("lifecycle.precondition", "condition",
-		fmt.Sprintf(`var.%s != "" || var.%s_ssh_public_key != ""`, deploymentKeyVar, accountID))
+		fmt.Sprintf(`var.%s != "" || var.%s_ssh_public_key != ""`, deploymentKeyVar, acc.ID))
 	n.add("lifecycle.precondition", "error_message", quote(msg))
 }
 
@@ -249,19 +273,53 @@ func ansibleWarnings(s model.Session, r Report) []string {
 	return out
 }
 
-// hostAddress resolves an asset to the address expression an inventory entry
-// needs. It reuses the reachability rules that decide whether a firewall rule can
-// name the host, because they are the same question.
+// hostAddress resolves an asset to the address an inventory entry names.
+//
+// This deliberately does NOT reuse addressExpr, which decides whether a firewall
+// rule may name a host. The two look like the same question and are not:
+//
+//   - A firewall rule persists in state while the address changes underneath it,
+//     so an address that moves on restart makes the rule silently wrong. That is
+//     why addressExpr refuses one.
+//   - An inventory is a local_file regenerated on every apply, so it always holds
+//     the current address. An ephemeral IP is perfectly correct here.
+//
+// A hostname is fine too — Ansible connects to names. The only unusable case is a
+// resource with no address attribute at all.
 func hostAddress(acc model.Account, a *model.Asset) (string, error) {
 	rt, ok := catalog.Type(acc.Provider, a.Code)
 	if !ok {
 		return "", fmt.Errorf("its resource type is not in the catalog")
 	}
-	expr, reason := addressExpr(rt, a)
-	if reason != "" {
-		return "", fmt.Errorf("%s", reason)
+	// A durable address is still preferable when one exists: it survives a restart,
+	// so the inventory does not change between applies.
+	if rt.AddressKind == catalog.AddrEphemeralIP && staticEnabled(a) && rt.StaticAddr != nil {
+		return fmt.Sprintf("${%s.%s.%s}", rt.StaticAddr.TofuType, a.ID, rt.StaticAddr.Attr), nil
 	}
-	return expr, nil
+	if rt.AddressAttr == "" {
+		return "", fmt.Errorf("its resource type exposes no address to put in an inventory")
+	}
+	// An address attribute that is not populated reads as an empty string rather
+	// than failing, so an unguarded reference here produced an inventory line with
+	// no address at all and an apply that looked like it had worked.
+	if rt.AddressRequires != "" {
+		if on, _ := a.Params[rt.AddressRequires].(bool); !on {
+			return "", fmt.Errorf("it has no public address — turn on %q on the asset",
+				paramLabel(rt, rt.AddressRequires))
+		}
+	}
+	return fmt.Sprintf("${%s.%s.%s}", rt.TofuType, a.ID, rt.AddressAttr), nil
+}
+
+// paramLabel is the label a param is shown under in the drawer, so a warning
+// names what the user has to click rather than an HCL argument they never see.
+func paramLabel(rt catalog.ResourceType, key string) string {
+	for _, f := range rt.Params {
+		if f.ParamKey() == key {
+			return f.Label
+		}
+	}
+	return key
 }
 
 // ---- inventory -------------------------------------------------------------
