@@ -252,6 +252,114 @@ setting a region and an account key in the drawer, generating, and confirming th
 variable default, the key becomes the first `coalesce` source for hosts in that account only, and an
 Ansible EC2 moves from a warning to a populated inventory line when the public IP is turned on.
 
+## Done — region-correct AMI selection for EC2
+
+Plan: `~/.claude/plans/ultra-lucky-puzzle.md`, the increment at the end.
+
+`aws_instance` defaulted to the literal `ami-0c55b159cbfafe1f0`, which is valid only in us-east-1.
+Now the chart names an operating system and a `data "aws_ami"` lookup resolves the ID at plan time
+in the account's region.
+
+| Change | State |
+|---|---|
+| `RequiresValue` on `ParamField`, `Fixed` and `Companion`; `required()` takes a value | **done** |
+| `Companion.Data`, emitting a `data` block rather than a `resource` | **done** |
+| Five OS presets plus `Custom AMI ID`, one gated lookup each | **done** |
+| `Never replace on a newer AMI` toggle emitting `ignore_changes = [ami]` | **done** |
+| AMI ID box hidden unless `Custom AMI ID` is chosen | **done** |
+| Warning when a gated field is opted into and left blank | **done** |
+| Collision invariants sharpened to "can these gates both apply?" | **done** |
+| `TestAMIFiltersResolve` — the check validate cannot do | **written, not yet run** |
+| Public SSM parameters for four presets, after a name pattern failed at apply | **done** |
+
+Two invariant tests failed when the presets landed, both correctly: five companions share the
+suffix `ami`, and both a companion and an editable field write the `ami` argument. Rather than
+loosen them, they now ask whether two writers' gates can ever both be satisfied — which still
+catches the original bug and permits the mutually exclusive case. That is the more useful
+invariant, and it was worth the detour.
+
+**Amazon Linux failed in ap-southeast-2, exactly as the unverified filters risked.** A user hit
+"Your query returned no results" at apply: `al2023-ami-2023.*-x86_64` matched nothing. The emitted
+HCL was correct, so this was not a generation bug — the pattern itself was a guess about AWS's
+naming, and there is no way to tell a good guess from a bad one without asking the API.
+
+Rather than guess a second pattern, four of the five presets now resolve through the public SSM
+parameters AWS and Canonical maintain, which point at the current image per region and assume
+nothing about image names. Debian keeps a name match because Debian publishes no parameter.
+
+**Still outstanding: nothing here can confirm the parameter paths resolve.** There is no AWS CLI or
+credentials in the development environment, and `tofu validate` never executes a data source — it
+proved `aws_ssm_parameter` and its `name` argument are real and nothing more. Run this wherever AWS
+access exists:
+
+```
+go test -tags integration ./internal/tofu -run TestAMIFiltersResolve
+```
+
+It now checks both kinds — a parameter must exist *and* return something beginning `ami-`, a filter
+must match at least one image. It skips silently without credentials, so a green run in an
+environment without them means nothing.
+
+Two known rough edges, both documented in `TOFU-MAPPING.md` and neither fixed: `Login user` still
+defaults to `ec2-user` whatever the image, and nothing warns that Ansible over SSH cannot reach
+Windows Server.
+
+## Done — duplicate firewall rules refused by AWS
+
+A user hit this at apply, on a chart that generated and validated cleanly:
+
+```
+InvalidPermission.Duplicate: the specified rule "peer: 0.0.0.0/0, TCP, from port: 80,
+to port: 80, ALLOW" already exists
+```
+
+Rules were accumulated by appending, and `ruleName` includes an index, so two identical permissions
+became two resources with different Terraform names and identical content. AWS accepts the first
+and refuses the second, failing the apply partway through. `tofu validate` was never going to catch
+it: both resources are valid alone and only collide at the API.
+
+`dedupeRules` now collapses them at the single loop every provider's rules pass through. Identity is
+the rule minus its comment; the comments are joined so a merged rule still reports both reasons.
+Golden files did not change, which is the evidence that valid charts generate exactly as before.
+
+Reproduced first, then fixed: `TestIdenticalRulesAreMergedNotRepeated` covers the collapse, and
+`TestRulesDifferingOnlyByPortAreKept` guards against collapsing too much.
+
+## Done — AWS subnets had no route to the internet
+
+A user could not SSH to an EC2 instance on a chart that generated and validated cleanly.
+
+`networkBlock` emitted a VPC, two subnets and an `aws_internet_gateway`, and **no route table
+existed anywhere in the codebase**. Nothing routed `0.0.0.0/0` to that gateway, so both subnets
+were private: an instance could hold a public IP and allow port 22 and still refuse connections,
+because the reply had no way out. The gateway was allocated and attached to nothing.
+
+The diagnosis ruled out the two plausible culprits before anything changed, and both are worth
+keeping:
+
+- **Security groups are stateful**, so a missing egress rule cannot break inbound SSH. The reply
+  to an allowed inbound connection is permitted automatically.
+- **No NACLs are emitted at all**, so AWS's default network ACL applies and allows everything.
+
+| Change | State |
+|---|---|
+| `aws_route_table` with an inline default route to the gateway | **done** |
+| `aws_route_table_association` for both subnets | **done** |
+| `noPublicAddress` extracted from `hostAddress`, shared with the new warning | **done** |
+| `unreachableWarnings` — inbound from outside the account to an asset with no address | **done** |
+
+AWS is the only provider affected: Azure and GCP create default internet routes, and DigitalOcean
+droplets get a public interface.
+
+Network ACLs were considered and rejected — stateless, per-subnet against a per-asset chart, and
+absent on GCP and DigitalOcean. The reasoning is in `TOFU-MAPPING.md` because "add ingress and
+egress VPC rules" is the plausible wrong answer to an unreachable host. The single thing that
+would justify revisiting is denying a specific CIDR, which security groups cannot express.
+
+**What this does not prove.** `tofu validate` confirms `aws_route_table`, its nested `route` block
+and `aws_route_table_association` are real arguments — it cannot confirm traffic flows. Only an
+apply and a connection do that. The honest claim is that the missing route is now emitted.
+
 ## Deliberately out of scope
 
 Undo/redo, canvas zoom and pan, multi-user editing, authentication, a database, server-side

@@ -35,7 +35,8 @@ type ParamField struct {
     Default   any       // for a security-relevant field, this IS the secure value
     Advanced  bool      // sits behind the drawer's disclosure
     Directive bool      // steers generation, never emitted as an argument
-    RequiresParam string // emit and show only when this boolean directive is on
+    RequiresParam string // emit and show only when this directive is satisfied
+    RequiresValue string // narrows that gate from "is on" to "equals this"
 }
 
 // Fixed is a required argument with exactly one sensible answer and no user
@@ -128,6 +129,34 @@ Three things about this pattern:
   there is no keystroke to interrupt.
 
 `Fixed` and `Companion` carry the same field, and every loop that walks them honours it.
+
+### Choosing between several options
+
+`RequiresValue` narrows the gate from "the directive is on" to "the directive equals this string",
+so one select can choose between several mutually exclusive companions. The AMI presets are why it
+exists: each operating system is one `data "aws_ami"` companion gated on its own value of the same
+select, and the `Custom AMI ID` option matches none of them, which is what leaves the `ami`
+argument to be typed by hand instead.
+
+Equality is the only comparison, deliberately. A negated gate would let two branches that write the
+same argument both fire, and OpenTofu rejects a repeated argument outright. `coerce` already
+guarantees a `FieldSelect` holds one of its declared options, so equality is sufficient.
+
+Two invariants in `catalog_test.go` enforce this rather than trusting it:
+
+- `TestFixedNeverCollidesWithAnEditableField` allows two writers of one argument only when their
+  gates are provably exclusive — same directive, two different values.
+- `TestCompanionsSharingASuffixAreExclusive` allows two companions to share a suffix on the same
+  terms, and additionally requires they be the same `TofuType`. The AMI presets share the suffix
+  `ami` on purpose, so switching operating system edits `data.aws_ami.<asset>_ami` rather than
+  moving it to a new address.
+
+`Companion.Data` emits the companion as a `data` block rather than a `resource` — something looked
+up at plan time instead of created.
+
+**Select option strings are stored session values.** A select's option is both its label and the
+value written into `Asset.Params`, so renaming one orphans every chart that chose it — the same
+permanence `ResourceType.Code` carries. Settle the wording before release.
 
 ## Account settings
 

@@ -52,10 +52,13 @@ type ParamField struct {
 	Directive bool `json:"directive,omitempty"`
 
 	// RequiresParam emits this argument, and shows the field, only when the named
-	// boolean directive is on. It exists for a block a resource may not accept at
+	// directive is satisfied. It exists for a block a resource may not accept at
 	// all: an instance-store AMI rejects root_block_device outright, so the block
 	// has to be omitted rather than given sensible values.
 	RequiresParam string `json:"requiresParam,omitempty"`
+	// RequiresValue narrows that gate from "is on" to "equals this". See the note
+	// on Companion.RequiresValue for why both forms exist.
+	RequiresValue string `json:"requiresValue,omitempty"`
 }
 
 // ParamKey is how this field is keyed in Asset.Params. Two fields can share a
@@ -77,10 +80,12 @@ type Fixed struct {
 	Key   string `json:"key"`
 	// Expr is rendered HCL, not a Go value: it may reference other resources.
 	Expr string `json:"expr"`
-	// RequiresParam emits this only when the named boolean directive is on for the
+	// RequiresParam emits this only when the named directive is satisfied for the
 	// asset. SSH key wiring uses it: a key pair is meaningless on a host nobody
 	// manages with Ansible.
 	RequiresParam string `json:"requiresParam,omitempty"`
+	// RequiresValue narrows that gate from "is on" to "equals this".
+	RequiresValue string `json:"requiresValue,omitempty"`
 }
 
 // Variable is a value the chart cannot supply and the user must, such as an SSH
@@ -116,8 +121,21 @@ type Companion struct {
 	ParentRef  string `json:"parentRef,omitempty"`
 	ParentExpr string `json:"parentExpr,omitempty"`
 	// RequiresParam emits this companion, and its ParentRef, only when the named
-	// boolean directive is on for the asset.
+	// directive is satisfied for the asset.
 	RequiresParam string `json:"requiresParam,omitempty"`
+	// RequiresValue narrows that gate from "the directive is on" to "the directive
+	// equals this string", so a select can choose between several companions.
+	//
+	// The AMI presets are why: each is one data source gated on its own value of
+	// the same select. Exactly one can match, and the "custom" option matches none
+	// — which is what leaves the argument to be written by hand instead. Equality
+	// is deliberately the only comparison; a negated gate would let two mutually
+	// exclusive branches both fire, and coerce already guarantees a select holds
+	// one of its declared options.
+	RequiresValue string `json:"requiresValue,omitempty"`
+	// Data emits this as a data source rather than a resource: something looked up
+	// at plan time instead of created.
+	Data bool `json:"data,omitempty"`
 	// Count is an HCL count expression. It exists for wiring that depends on a
 	// value infrachart cannot see — an SSH key supplied as a Terraform variable —
 	// where the decision has to be made at plan time rather than generation time.

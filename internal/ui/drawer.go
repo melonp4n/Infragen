@@ -143,7 +143,7 @@ func noteText(o tofu.Outcome) string {
 // that generation then drops, which is worse than not offering it.
 func splitParams(fields []catalog.ParamField, params map[string]any) (essential, advanced []catalog.ParamField) {
 	for _, f := range fields {
-		if f.RequiresParam != "" && !truthy(params[f.RequiresParam]) {
+		if !gateOpen(f, params) {
 			continue
 		}
 		if f.Advanced && !f.Directive {
@@ -153,4 +153,18 @@ func splitParams(fields []catalog.ParamField, params map[string]any) (essential,
 		essential = append(essential, f)
 	}
 	return essential, advanced
+}
+
+// gateOpen mirrors required() in internal/tofu: with a value the directive must
+// equal it, without one it must be on. The two have to agree, or the drawer would
+// show a field generation ignores, or hide one it honours.
+func gateOpen(f catalog.ParamField, params map[string]any) bool {
+	if f.RequiresParam == "" {
+		return true
+	}
+	if f.RequiresValue != "" {
+		got, _ := params[f.RequiresParam].(string)
+		return got == f.RequiresValue
+	}
+	return truthy(params[f.RequiresParam])
 }

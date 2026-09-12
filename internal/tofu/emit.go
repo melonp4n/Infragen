@@ -28,15 +28,8 @@ func Generate(s model.Session) (string, []string) {
 			firewalls[acc.ID] = fw
 		}
 	}
-	for _, f := range report.Flows {
-		for _, o := range f.Outcomes {
-			for _, r := range fwRulesFor(f, o) {
-				owner := ruleOwner(f, r)
-				if fw := firewalls[owner]; fw != nil {
-					fw.add(r)
-				}
-			}
-		}
+	for _, k := range dedupeRules(report, firewalls) {
+		firewalls[k.owner].add(k.rule)
 	}
 
 	guarded := guardedAssets(report)
@@ -97,7 +90,9 @@ func Generate(s model.Session) (string, []string) {
 	attachmentGaps(w, s, guarded)
 	notes(w, report)
 
-	return w.String(), append(report.Warnings(), ansibleWarnings(s, report)...)
+	warnings := append(report.Warnings(), ansibleWarnings(s, report)...)
+	warnings = append(warnings, unreachableWarnings(report)...)
+	return w.String(), append(warnings, blankChoiceWarnings(s)...)
 }
 
 func header(w *writer) {
@@ -231,6 +226,33 @@ func scaffold(w *writer, provider, accountID string) {
 			w.arg("provider", "aws."+local)
 			w.arg("vpc_id", fmt.Sprintf("aws_vpc.%s.id", local))
 		})
+		// A gateway with nothing routed to it is a gateway that does nothing. Without
+		// this table both subnets are private: an instance can hold a public IP and
+		// allow port 22 and still be unreachable, because the reply has no way out.
+		//
+		// An inline route rather than a separate aws_route resource: one resource
+		// instead of two, and the inline form is authoritative, so nothing can add a
+		// route behind the chart's back.
+		w.blank()
+		w.block(fmt.Sprintf("resource %q %q", "aws_route_table", local), func() {
+			w.arg("provider", "aws."+local)
+			w.arg("vpc_id", fmt.Sprintf("aws_vpc.%s.id", local))
+			w.block("route", func() {
+				w.arg("cidr_block", quote("0.0.0.0/0"))
+				w.arg("gateway_id", fmt.Sprintf("aws_internet_gateway.%s.id", local))
+			})
+		})
+		// Both subnets, because an asset may land in either and a load balancer
+		// spans both. A subnet left unassociated falls back to the VPC's main route
+		// table, which has no gateway route — reachable or not by accident.
+		for _, subnet := range []string{local, local + "_b"} {
+			w.blank()
+			w.block(fmt.Sprintf("resource %q %q", "aws_route_table_association", subnet), func() {
+				w.arg("provider", "aws."+local)
+				w.arg("subnet_id", fmt.Sprintf("aws_subnet.%s.id", subnet))
+				w.arg("route_table_id", fmt.Sprintf("aws_route_table.%s.id", local))
+			})
+		}
 	case "azure":
 		w.blank()
 		w.block(fmt.Sprintf("resource %q %q", "azurerm_resource_group", local), func() {
@@ -299,7 +321,7 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	for _, f := range rt.Arguments() {
 		// Same gate as Fixed and Companions below. An argument in a block the
 		// resource does not accept is a plan error, not a harmless extra.
-		if !required(f.RequiresParam, a) {
+		if !required(f.RequiresParam, f.RequiresValue, a) {
 			continue
 		}
 		v := a.Params[f.ParamKey()]
@@ -311,14 +333,14 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 		root.add(f.Block, f.Key, wrapped(f, v))
 	}
 	for _, fx := range rt.Fixed {
-		if !required(fx.RequiresParam, a) {
+		if !required(fx.RequiresParam, fx.RequiresValue, a) {
 			continue
 		}
 		addFixed(root, fx, ctx)
 	}
 	// A companion the parent never references would be dead HCL.
 	for _, c := range rt.Companions {
-		if !required(c.RequiresParam, a) {
+		if !required(c.RequiresParam, c.RequiresValue, a) {
 			continue
 		}
 		if c.ParentRef != "" {
@@ -346,7 +368,7 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	w.block(fmt.Sprintf("resource %q %q", rt.TofuType, a.ID), func() { root.render(w) })
 
 	for _, c := range rt.Companions {
-		if !required(c.RequiresParam, a) {
+		if !required(c.RequiresParam, c.RequiresValue, a) {
 			continue
 		}
 		companionResource(w, p, acc, a, c)
@@ -370,14 +392,22 @@ func companionResource(w *writer, p catalog.Provider, acc model.Account, a model
 		// Same gate as an asset's own fixed arguments. Without it a conditional
 		// argument inside a companion was emitted unconditionally — which is how
 		// Azure's public IP came out allocated but never attached.
-		if !required(fx.RequiresParam, a) {
+		if !required(fx.RequiresParam, fx.RequiresValue, a) {
 			continue
 		}
 		addFixed(node, fx, ctx)
 	}
 	w.blank()
-	w.line("# %s requires this", a.Name)
-	w.block(fmt.Sprintf("resource %q %q", c.TofuType, name), func() { node.render(w) })
+	kind := "resource"
+	if c.Data {
+		// A data source is looked up, not created, so "requires this" would misread
+		// as something the apply brings into existence.
+		kind = "data"
+		w.line("# %s resolves its image here, so the id is right for the account's region", a.Name)
+	} else {
+		w.line("# %s requires this", a.Name)
+	}
+	w.block(fmt.Sprintf("%s %q %q", kind, c.TofuType, name), func() { node.render(w) })
 }
 
 // assetCtx is what a catalog expression may refer to for one asset.
@@ -390,11 +420,75 @@ func assetCtx(acc model.Account, a model.Asset) exprCtx {
 	}
 }
 
-// required reports whether a conditional Fixed or Companion applies. An empty
-// condition always applies; otherwise the named boolean directive must be on.
-func required(param string, a model.Asset) bool {
+// ownedRule is one firewall rule and the account whose firewall carries it.
+type ownedRule struct {
+	owner string
+	rule  fwRule
+}
+
+// dedupeRules collapses rules that describe the same permission.
+//
+// Two connections can mean the same thing — a host reaching the internet on 443,
+// and reaching something that resolves to the same address on the same port — and
+// so can one connection carrying a rule twice. Every provider funnels through
+// here, so this is the one place that has to know.
+//
+// It is not a tidiness pass. AWS rejects the second identical rule outright with
+// InvalidPermission.Duplicate, which fails the apply after some of the chart has
+// already been created. `tofu validate` cannot see it, because the two resources
+// are perfectly valid on their own and only collide at the API.
+//
+// Everything but the comment is the rule's identity; the comments are joined, so
+// the output still says why a merged rule exists rather than silently naming one
+// reason out of two.
+func dedupeRules(report Report, firewalls map[string]firewall) []ownedRule {
+	seen := map[ownedRule]int{}
+	var out []ownedRule
+	for _, f := range report.Flows {
+		for _, o := range f.Outcomes {
+			for _, r := range fwRulesFor(f, o) {
+				owner := ruleOwner(f, r)
+				if fw := firewalls[owner]; fw == nil {
+					continue
+				}
+				key := ownedRule{owner, r}
+				key.rule.Comment = ""
+				if i, ok := seen[key]; ok {
+					out[i].rule.Comment = mergeComments(out[i].rule.Comment, r.Comment)
+					continue
+				}
+				seen[key] = len(out)
+				out = append(out, ownedRule{owner, r})
+			}
+		}
+	}
+	return out
+}
+
+// mergeComments joins the reasons for a merged rule, dropping a repeat rather than
+// saying the same thing twice.
+func mergeComments(existing, add string) string {
+	if add == "" || existing == add || strings.Contains(existing, add) {
+		return existing
+	}
+	if existing == "" {
+		return add
+	}
+	return existing + "; also " + add
+}
+
+// required reports whether a conditional Fixed, Companion or ParamField applies.
+//
+// An empty param always applies. With a value, the named directive must equal it,
+// which is how several companions share one select and only the chosen one is
+// emitted. Without, the directive is a boolean that must be on.
+func required(param, value string, a model.Asset) bool {
 	if param == "" {
 		return true
+	}
+	if value != "" {
+		got, _ := a.Params[param].(string)
+		return got == value
 	}
 	on, _ := a.Params[param].(bool)
 	return on
@@ -606,4 +700,83 @@ func attachmentGaps(w *writer, s model.Session, guarded map[string]bool) {
 	for _, l := range lines {
 		w.line("%s", l)
 	}
+}
+
+// blankChoiceWarnings reports a field the chart opted into and then left empty.
+//
+// Choosing "Custom AMI ID" and typing nothing is the case this exists for: it
+// reaches generation as ami = "", a resource that looks complete and cannot
+// launch. Blank is accepted while editing so the drawer still renders, then
+// refused here — the same treatment a blank port gets.
+//
+// The rule is deliberately about the gate rather than about any particular field.
+// An ungated field left blank is absence, and has a default behind it; a gated one
+// is a question the user chose to be asked and did not answer.
+func blankChoiceWarnings(s model.Session) []string {
+	var out []string
+	for _, acc := range s.Accounts {
+		for _, a := range acc.Assets {
+			rt, ok := catalog.Type(acc.Provider, a.Code)
+			if !ok {
+				continue
+			}
+			for _, f := range rt.Arguments() {
+				if f.RequiresValue == "" || !required(f.RequiresParam, f.RequiresValue, a) {
+					continue
+				}
+				v, isText := a.Params[f.ParamKey()].(string)
+				if !isText || strings.TrimSpace(v) != "" {
+					continue
+				}
+				out = append(out, fmt.Sprintf(
+					"%s → %s chose %q but left %s empty — enter a value, or pick a different option",
+					acc.Name, a.Name, f.RequiresValue, f.Label))
+			}
+		}
+	}
+	return out
+}
+
+// unreachableWarnings reports an asset that is allowed inbound from outside its
+// own network but has no address anything out there could reach.
+//
+// A firewall rule permits traffic; it does not deliver it. An instance with no
+// public address and a rule allowing port 22 generates cleanly, applies cleanly,
+// and cannot be connected to — the failure looks like a firewall problem and is
+// not one.
+//
+// Only traffic from outside the account needs a public address. A same-account
+// peer resolves to a security group reference over private addressing, so
+// warning about it would be a false alarm on the most common case of all.
+func unreachableWarnings(r Report) []string {
+	var out []string
+	for _, f := range r.Flows {
+		if f.To.Asset == nil || f.To.Account == nil || f.To.Type.Network != catalog.NetFirewalled {
+			continue
+		}
+		// The internet and a hardcoded address are outside by definition; an asset
+		// is outside when it sits in another account, because the two VPCs have no
+		// private path between them.
+		external := f.From.Ref.Type != model.NodeAsset ||
+			f.From.Account == nil || f.From.Account.ID != f.To.Account.ID
+		if !external {
+			continue
+		}
+		// A refused outcome emits nothing, so it grants no access to warn about.
+		grants := false
+		for _, o := range f.Outcomes {
+			if o.Strategy != StratRefused {
+				grants = true
+				break
+			}
+		}
+		if !grants {
+			continue
+		}
+		if reason := noPublicAddress(f.To.Type, f.To.Asset); reason != "" {
+			out = append(out, fmt.Sprintf("%s → %s is allowed inbound from %s, but %s",
+				f.To.Account.Name, f.To.Asset.Name, f.From.Label, reason))
+		}
+	}
+	return out
 }

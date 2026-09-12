@@ -129,12 +129,12 @@ const deploymentKeyVar = "ssh_public_key"
 // the flag left those references dangling.
 func usesSSHKey(rt catalog.ResourceType, a model.Asset) bool {
 	for _, fx := range rt.Fixed {
-		if strings.Contains(fx.Expr, phSSHKey) && required(fx.RequiresParam, a) {
+		if strings.Contains(fx.Expr, phSSHKey) && required(fx.RequiresParam, fx.RequiresValue, a) {
 			return true
 		}
 	}
 	for _, c := range rt.Companions {
-		if !required(c.RequiresParam, a) {
+		if !required(c.RequiresParam, c.RequiresValue, a) {
 			continue
 		}
 		for _, fx := range c.Fixed {
@@ -299,16 +299,38 @@ func hostAddress(acc model.Account, a *model.Asset) (string, error) {
 	if rt.AddressAttr == "" {
 		return "", fmt.Errorf("its resource type exposes no address to put in an inventory")
 	}
-	// An address attribute that is not populated reads as an empty string rather
-	// than failing, so an unguarded reference here produced an inventory line with
-	// no address at all and an apply that looked like it had worked.
-	if rt.AddressRequires != "" {
-		if on, _ := a.Params[rt.AddressRequires].(bool); !on {
-			return "", fmt.Errorf("it has no public address — turn on %q on the asset",
-				paramLabel(rt, rt.AddressRequires))
-		}
+	if reason := noPublicAddress(rt, a); reason != "" {
+		return "", fmt.Errorf("%s", reason)
 	}
 	return fmt.Sprintf("${%s.%s.%s}", rt.TofuType, a.ID, rt.AddressAttr), nil
+}
+
+// noPublicAddress reports why an asset has no address anything outside its own
+// network could reach, or "" when it has one.
+//
+// An address attribute that is not populated reads as an empty string rather than
+// failing, so a reference to one produces output that applies cleanly and cannot
+// work — a blank inventory line, or an instance nothing can connect to.
+// ResourceType.AddressRequires names the toggle that has to be on first.
+//
+// One definition, used by both the inventory and the reachability warning. They
+// ask the same question, and two copies of it would drift.
+func noPublicAddress(rt catalog.ResourceType, a *model.Asset) string {
+	if rt.AddressRequires == "" {
+		return ""
+	}
+	if on, _ := a.Params[rt.AddressRequires].(bool); on {
+		return ""
+	}
+	// A durable address is an address: the static toggle allocates one and attaches
+	// it, so the gate above is irrelevant once it is on.
+	if staticEnabled(a) && rt.StaticAddr != nil {
+		return ""
+	}
+	// Names the field label rather than the HCL argument, because the label is what
+	// the user clicks in the drawer.
+	return fmt.Sprintf("it has no public address — turn on %q on the asset",
+		paramLabel(rt, rt.AddressRequires))
 }
 
 // paramLabel is the label a param is shown under in the drawer, so a warning

@@ -77,6 +77,27 @@ resource "aws_internet_gateway" "acc_1" {
   vpc_id   = aws_vpc.acc_1.id
 }
 
+resource "aws_route_table" "acc_1" {
+  provider = aws.acc_1
+  vpc_id   = aws_vpc.acc_1.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.acc_1.id
+  }
+}
+
+resource "aws_route_table_association" "acc_1" {
+  provider       = aws.acc_1
+  subnet_id      = aws_subnet.acc_1.id
+  route_table_id = aws_route_table.acc_1.id
+}
+
+resource "aws_route_table_association" "acc_1_b" {
+  provider       = aws.acc_1
+  subnet_id      = aws_subnet.acc_1_b.id
+  route_table_id = aws_route_table.acc_1.id
+}
+
 # AWS Account 1 → Edge CDN
 resource "aws_cloudfront_distribution" "asset_1" {
   provider    = aws.acc_1
@@ -121,11 +142,11 @@ resource "aws_instance" "asset_3" {
   provider                    = aws.acc_1
   tags                        = { Name = "Web tier EC2" }
   instance_type               = "t3.micro"
-  ami                         = "ami-0c55b159cbfafe1f0"
   associate_public_ip_address = false
   monitoring                  = false
   subnet_id                   = aws_subnet.acc_1.id
   key_name                    = one(aws_key_pair.asset_3_key[*].key_name)
+  ami                         = data.aws_ssm_parameter.asset_3_ami.value
   vpc_security_group_ids      = [aws_security_group.asset_3.id]
   metadata_options {
     http_tokens = "required"
@@ -142,6 +163,12 @@ resource "aws_key_pair" "asset_3_key" {
   provider   = aws.acc_1
   key_name   = "asset-3"
   public_key = local.asset_3_ssh_key
+}
+
+# Web tier EC2 resolves its image here, so the id is right for the account's region
+data "aws_ssm_parameter" "asset_3_ami" {
+  provider = aws.acc_1
+  name     = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 # AWS Account 1 → Orders DB
@@ -303,6 +330,27 @@ resource "aws_subnet" "acc_2_b" {
 resource "aws_internet_gateway" "acc_2" {
   provider = aws.acc_2
   vpc_id   = aws_vpc.acc_2.id
+}
+
+resource "aws_route_table" "acc_2" {
+  provider = aws.acc_2
+  vpc_id   = aws_vpc.acc_2.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.acc_2.id
+  }
+}
+
+resource "aws_route_table_association" "acc_2" {
+  provider       = aws.acc_2
+  subnet_id      = aws_subnet.acc_2.id
+  route_table_id = aws_route_table.acc_2.id
+}
+
+resource "aws_route_table_association" "acc_2_b" {
+  provider       = aws.acc_2
+  subnet_id      = aws_subnet.acc_2_b.id
+  route_table_id = aws_route_table.acc_2.id
 }
 
 # AWS Account 2 → Image resize fn

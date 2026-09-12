@@ -79,16 +79,37 @@ resource "aws_internet_gateway" "acc_aws" {
   vpc_id   = aws_vpc.acc_aws.id
 }
 
+resource "aws_route_table" "acc_aws" {
+  provider = aws.acc_aws
+  vpc_id   = aws_vpc.acc_aws.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.acc_aws.id
+  }
+}
+
+resource "aws_route_table_association" "acc_aws" {
+  provider       = aws.acc_aws
+  subnet_id      = aws_subnet.acc_aws.id
+  route_table_id = aws_route_table.acc_aws.id
+}
+
+resource "aws_route_table_association" "acc_aws_b" {
+  provider       = aws.acc_aws
+  subnet_id      = aws_subnet.acc_aws_b.id
+  route_table_id = aws_route_table.acc_aws.id
+}
+
 # AWS → EC2 instance
 resource "aws_instance" "asset_aws_ec2" {
   provider                    = aws.acc_aws
   tags                        = { Name = "EC2 instance" }
   instance_type               = "t3.micro"
-  ami                         = "ami-0c55b159cbfafe1f0"
   associate_public_ip_address = false
   monitoring                  = false
   subnet_id                   = aws_subnet.acc_aws.id
   key_name                    = one(aws_key_pair.asset_aws_ec2_key[*].key_name)
+  ami                         = data.aws_ssm_parameter.asset_aws_ec2_ami.value
   metadata_options {
     http_tokens = "required"
   }
@@ -104,6 +125,12 @@ resource "aws_key_pair" "asset_aws_ec2_key" {
   provider   = aws.acc_aws
   key_name   = "asset-aws-ec2"
   public_key = local.asset_aws_ec2_ssh_key
+}
+
+# EC2 instance resolves its image here, so the id is right for the account's region
+data "aws_ssm_parameter" "asset_aws_ec2_ami" {
+  provider = aws.acc_aws
+  name     = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 # AWS → Lambda

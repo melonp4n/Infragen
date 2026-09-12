@@ -17,8 +17,30 @@ func init() {
 		TofuSource:    "hashicorp/aws",
 		LabelArg:      "tags",
 		Config:        []Fixed{{Key: "region", Expr: "{{region}}"}},
+		// Every region in the standard `aws` partition, sorted by code so the
+		// geographic prefixes group themselves. GovCloud and China are deliberately
+		// absent: they are separate partitions reached with separate accounts and
+		// endpoints, so a generated configuration naming one would not work without
+		// provider changes this tool does not make.
+		//
+		// Several of these are opt-in and must be enabled on the account first —
+		// see documentation/TOFU-MAPPING.md.
 		AccountParams: AccountSettings([]string{
-			"eu-west-1", "eu-west-2", "eu-central-1", "us-east-1", "us-west-2", "ap-southeast-1",
+			"af-south-1",
+			"ap-east-1", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
+			"ap-south-1", "ap-south-2",
+			"ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4",
+			"ap-southeast-5", "ap-southeast-7",
+			"ca-central-1", "ca-west-1",
+			"eu-central-1", "eu-central-2",
+			"eu-north-1",
+			"eu-south-1", "eu-south-2",
+			"eu-west-1", "eu-west-2", "eu-west-3",
+			"il-central-1",
+			"me-central-1", "me-south-1",
+			"mx-central-1",
+			"sa-east-1",
+			"us-east-1", "us-east-2", "us-west-1", "us-west-2",
 		}, "eu-west-2"),
 		Types: []ResourceType{
 			{
@@ -30,10 +52,12 @@ func init() {
 				AddressRequires: "associate_public_ip_address",
 				Fixed: []Fixed{
 					{Key: "subnet_id", Expr: "aws_subnet.{{account}}.id"},
+					// Bare attribute names, not strings: ignore_changes takes references.
+					{Block: "lifecycle", Key: "ignore_changes", Expr: "[ami]", RequiresParam: ParamPinAMI},
 				},
 				// Created only when a key resolves from somewhere — which may be a
 				// Terraform variable, so the decision belongs at plan time.
-				Companions: []Companion{{
+				Companions: append([]Companion{{
 					TofuType: "aws_key_pair", Suffix: "key",
 					Count: `{{sshkey}} != "" ? 1 : 0`,
 					Fixed: []Fixed{
@@ -42,11 +66,20 @@ func init() {
 					},
 					ParentRef:  "key_name",
 					ParentExpr: "one(aws_key_pair.{{asset}}_key[*].key_name)",
-				}},
+				}}, amiLookups()...),
 				Params: append([]ParamField{
 					StaticAddressToggle(),
 					{Key: "instance_type", Label: "Instance type", Type: FieldSelect, Options: []string{"t3.micro", "t3.small", "t3.medium", "m5.large", "c5.xlarge"}, Default: "t3.micro"},
-					{Key: "ami", Label: "AMI ID", Type: FieldText, Default: "ami-0c55b159cbfafe1f0"},
+					// An AMI ID is region-specific, so the chart names an OS and lets a
+					// data source resolve the ID for the account's region at plan time.
+					{Key: ParamAMIOS, Label: "Operating system", Type: FieldSelect, Options: amiOptions(), Default: amiPresets[0].Label, Directive: true},
+					// Only reachable through the custom option, so it starts empty rather
+					// than carrying an ID that is wrong everywhere but one region.
+					{Key: "ami", Label: "AMI ID", Type: FieldText, Default: "", RequiresParam: ParamAMIOS, RequiresValue: AMICustom},
+					// Off means each apply takes the newest matching image, which is what
+					// short-lived infrastructure wants. On freezes an instance that is
+					// already running against a newer image being published.
+					{Key: ParamPinAMI, Label: "Never replace on a newer AMI", Type: FieldBoolean, Default: false, Directive: true},
 					{Key: "associate_public_ip_address", Label: "Assign public IP", Type: FieldBoolean, Default: false, Advanced: true},
 					{Key: "monitoring", Label: "Detailed monitoring", Type: FieldBoolean, Default: false, Advanced: true},
 					// IMDSv2. Requiring a token is what stops an SSRF bug reaching
@@ -257,4 +290,115 @@ func init() {
 			},
 		},
 	})
+}
+
+// ParamAMIOS is the operating system choice, and ParamPinAMI freezes the instance
+// against a newer image. Both steer generation rather than naming an argument.
+const (
+	ParamAMIOS  = "ami_os"
+	ParamPinAMI = "pin_ami"
+)
+
+// AMICustom is the option that means "I will supply the ID myself". It matches no
+// preset, which is exactly what leaves the ami argument to the text field.
+const AMICustom = "Custom AMI ID"
+
+// AMIPreset is one operating system offered on an EC2 instance.
+//
+// An AMI ID is region-specific, so the chart stores the OS and resolves the ID at
+// plan time in whatever region the account is set to. Storing an ID instead is
+// what made the old default valid only in us-east-1.
+//
+// There are two ways to resolve one, and they are not equally good:
+//
+//   - SSMPath is a public parameter the publisher maintains, pointing at the
+//     current image for whichever region is queried. Nothing about the image name
+//     is assumed, so there is no naming convention to get wrong. Preferred.
+//   - Owner and Filter match on the image name, for an image with no published
+//     parameter. A name pattern is a guess about someone else's naming, and a
+//     wrong guess matches nothing — "Your query returned no results" at apply,
+//     which is exactly how the first attempt at Amazon Linux failed.
+//
+// Reading a public parameter needs ssm:GetParameters where a name match needs
+// ec2:DescribeImages. That is the cost of the exact method.
+type AMIPreset struct {
+	// Label is stored in saved sessions, so it is permanent in the same way
+	// ResourceType.Code is. Renaming one orphans the charts that chose it.
+	Label string
+	// SSMPath wins when set; Owner and Filter are the fallback.
+	SSMPath string
+	Owner   string
+	Filter  string
+}
+
+// Exact returns whether this preset resolves through a published parameter rather
+// than by guessing at an image name.
+func (p AMIPreset) Exact() bool { return p.SSMPath != "" }
+
+// amiPresets is the offered set: the common choices, not an exhaustive list.
+// All are x86_64, matching the instance types above. A Graviton instance type
+// would need an architecture alongside this, not a longer list.
+//
+// Debian is the one name match left, because Debian publishes no parameter. Its
+// naming is also the simplest of the five, which is the best case for a pattern.
+var amiPresets = []AMIPreset{
+	{Label: "Amazon Linux 2023",
+		SSMPath: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"},
+	{Label: "Ubuntu Server 24.04 LTS",
+		SSMPath: "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"},
+	{Label: "Debian 12",
+		Owner: "136693071363", Filter: "debian-12-amd64-*"},
+	{Label: "Windows Server 2022",
+		SSMPath: "/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base"},
+	{Label: "ECS-optimized (Amazon Linux 2023)",
+		SSMPath: "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id"},
+}
+
+// AMIPresets is the offered set, for the integration check that confirms each one
+// still resolves to an image.
+func AMIPresets() []AMIPreset { return amiPresets }
+
+// amiOptions is the select's option list: every preset, then the custom escape.
+func amiOptions() []string {
+	out := make([]string, 0, len(amiPresets)+1)
+	for _, p := range amiPresets {
+		out = append(out, p.Label)
+	}
+	return append(out, AMICustom)
+}
+
+// amiLookups turns the presets into one data source each, gated on its own value
+// of the select. Exactly one can match, so exactly one is emitted — and the custom
+// option matches none, leaving the ami argument to be written by hand.
+//
+// Every one uses the same suffix, so the address is data.aws_ami.<asset>_ami
+// whatever the OS. Switching OS therefore edits a resource rather than moving one.
+func amiLookups() []Companion {
+	out := make([]Companion, 0, len(amiPresets))
+	for _, p := range amiPresets {
+		c := Companion{
+			Suffix: "ami", Data: true,
+			RequiresParam: ParamAMIOS, RequiresValue: p.Label,
+			ParentRef: "ami",
+		}
+		if p.Exact() {
+			c.TofuType = "aws_ssm_parameter"
+			c.Fixed = []Fixed{{Key: "name", Expr: `"` + p.SSMPath + `"`}}
+			c.ParentExpr = "data.aws_ssm_parameter.{{asset}}_ami.value"
+		} else {
+			c.TofuType = "aws_ami"
+			c.Fixed = []Fixed{
+				{Key: "most_recent", Expr: "true"},
+				// Always scoped to an owner. most_recent across every publisher would
+				// match whatever anyone happened to name similarly, which is a
+				// supply-chain problem rather than a convenience.
+				{Key: "owners", Expr: `["` + p.Owner + `"]`},
+				{Block: "filter", Key: "name", Expr: `"name"`},
+				{Block: "filter", Key: "values", Expr: `["` + p.Filter + `"]`},
+			}
+			c.ParentExpr = "data.aws_ami.{{asset}}_ami.id"
+		}
+		out = append(out, c)
+	}
+	return out
 }

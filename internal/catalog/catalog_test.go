@@ -1,6 +1,9 @@
 package catalog
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
 
 // The generator switches on Network and AddressKind to decide whether a
 // connection becomes a firewall rule. A type that is missing or inconsistent in
@@ -134,25 +137,52 @@ func TestStaticToggleIsSeeded(t *testing.T) {
 	}
 }
 
+// gate is the condition under which a field, Fixed or companion applies, so two
+// writers of the same argument can be checked for whether they can ever collide.
+type gate struct{ param, value string }
+
+// exclusive reports whether two gates can never both be satisfied.
+//
+// Only one form is provable: the same directive required to equal two different
+// values. Everything else is treated as a possible collision, because a false
+// "these cannot both fire" is exactly the silent double-write these tests exist
+// to catch.
+func exclusive(a, b gate) bool {
+	return a.param != "" && a.param == b.param &&
+		a.value != "" && b.value != "" && a.value != b.value
+}
+
 // A Fixed value silently overriding an editable field would give the user a
 // control that does nothing — the same class of bug as a security group that is
 // created but never attached.
+//
+// Two writers of one argument are allowed only where their gates are mutually
+// exclusive. The AMI presets are the case: each lookup sets ami, and so does the
+// custom text field, but a select cannot hold two values at once.
 func TestFixedNeverCollidesWithAnEditableField(t *testing.T) {
 	for _, p := range All() {
 		for _, rt := range p.Types {
-			editable := map[string]bool{}
+			editable := map[string][]gate{}
 			for _, f := range rt.Params {
 				if !f.Directive {
-					editable[f.ParamKey()] = true
+					editable[f.ParamKey()] = append(editable[f.ParamKey()], gate{f.RequiresParam, f.RequiresValue})
 				}
 			}
 			// A companion writes its ParentRef onto the parent, so a Fixed or a
 			// field with the same key would set that argument twice — which
 			// OpenTofu rejects as "Attribute redefined".
-			parentRefs := map[string]bool{}
+			parentRefs := map[string][]gate{}
 			for _, c := range rt.Companions {
 				if c.ParentRef != "" {
-					parentRefs[c.ParentRef] = true
+					parentRefs[c.ParentRef] = append(parentRefs[c.ParentRef], gate{c.RequiresParam, c.RequiresValue})
+				}
+			}
+			collides := func(what, key string, g gate, others []gate) {
+				for _, o := range others {
+					if !exclusive(g, o) {
+						t.Errorf("%s/%s: %q is set by both %s and %+v, which can both apply",
+							p.Key, rt.Code, key, what, o)
+					}
 				}
 			}
 			for _, fx := range rt.Fixed {
@@ -160,19 +190,46 @@ func TestFixedNeverCollidesWithAnEditableField(t *testing.T) {
 				if fx.Block != "" {
 					key = fx.Block + "." + fx.Key
 				}
-				if editable[key] {
-					t.Errorf("%s/%s: %q is both a Fixed value and an editable field",
-						p.Key, rt.Code, key)
-				}
-				if fx.Block == "" && parentRefs[fx.Key] {
-					t.Errorf("%s/%s: %q is set by both a Fixed value and a companion ParentRef",
-						p.Key, rt.Code, fx.Key)
+				g := gate{fx.RequiresParam, fx.RequiresValue}
+				collides("a Fixed value and an editable field", key, g, editable[key])
+				if fx.Block == "" {
+					collides("a Fixed value and a companion ParentRef", key, g, parentRefs[fx.Key])
 				}
 			}
-			for key := range parentRefs {
-				if editable[key] {
-					t.Errorf("%s/%s: %q is set by both a companion ParentRef and an editable field",
-						p.Key, rt.Code, key)
+			for key, gates := range parentRefs {
+				for _, g := range gates {
+					collides("a companion ParentRef and an editable field", key, g, editable[key])
+				}
+			}
+		}
+	}
+}
+
+// Two companions may share a suffix only when they can never both be emitted —
+// otherwise they would produce the same resource address twice. The AMI presets
+// share one deliberately, so switching operating system edits a data source
+// rather than moving it to a new address.
+func TestCompanionsSharingASuffixAreExclusive(t *testing.T) {
+	for _, p := range All() {
+		for _, rt := range p.Types {
+			for i, a := range rt.Companions {
+				for _, b := range rt.Companions[i+1:] {
+					if a.Suffix != b.Suffix {
+						continue
+					}
+					if !exclusive(gate{a.RequiresParam, a.RequiresValue}, gate{b.RequiresParam, b.RequiresValue}) {
+						t.Errorf("%s/%s: companions %q and %q share suffix %q and can both apply",
+							p.Key, rt.Code, a.TofuType, b.TofuType, a.Suffix)
+					}
+					// Sharing a suffix across two types changes the resource address,
+					// which for a resource means destroy-and-recreate. A data source
+					// holds no state and is only ever read, so there is nothing to
+					// move — which is what lets one OS resolve through a published
+					// parameter and another through a name match.
+					if a.TofuType != b.TofuType && !(a.Data && b.Data) {
+						t.Errorf("%s/%s: suffix %q is shared by resources of different types %q and %q, so switching between them would move state",
+							p.Key, rt.Code, a.Suffix, a.TofuType, b.TofuType)
+					}
 				}
 			}
 		}
@@ -215,20 +272,51 @@ func TestParamKeyIncludesBlock(t *testing.T) {
 	}
 }
 
-// Companions are named from the asset ID plus a suffix, so a suffix is what makes
-// two companions on one type distinguishable.
-func TestCompanionSuffixesAreUnique(t *testing.T) {
+// Companions are named from the asset ID plus a suffix, so a companion with
+// neither has no address at all. Whether two may share a suffix is
+// TestCompanionsSharingASuffixAreExclusive.
+func TestCompanionsAreNamed(t *testing.T) {
 	for _, p := range All() {
 		for _, rt := range p.Types {
-			seen := map[string]bool{}
 			for _, c := range rt.Companions {
 				if c.TofuType == "" || c.Suffix == "" {
 					t.Errorf("%s/%s: companion missing TofuType or Suffix: %+v", p.Key, rt.Code, c)
 				}
-				if seen[c.Suffix] {
-					t.Errorf("%s/%s: duplicate companion suffix %q", p.Key, rt.Code, c.Suffix)
+			}
+		}
+	}
+}
+
+// A region reaches HCL verbatim as the provider's region, so an option has to be
+// a region code and nothing else. A friendlier label such as "eu-west-2 (London)"
+// would be stored and emitted as written, and fail at plan.
+func TestRegionOptionsAreCodes(t *testing.T) {
+	// Not a shape check — the four clouds disagree on that: eu-west-2, us-central1,
+	// uksouth, lon1. What matters is that no label characters appear, since a space
+	// or a bracket means a friendly name has leaked into a value.
+	code := regexp.MustCompile(`^[a-z0-9-]+$`)
+	for _, p := range All() {
+		for _, f := range p.AccountParams {
+			if f.Key != ParamRegion {
+				continue
+			}
+			if len(f.Options) == 0 {
+				t.Errorf("%s: region field with no options", p.Key)
+			}
+			seen := map[string]bool{}
+			for _, opt := range f.Options {
+				if !code.MatchString(opt) {
+					t.Errorf("%s: %q is not a region code", p.Key, opt)
 				}
-				seen[c.Suffix] = true
+				if seen[opt] {
+					t.Errorf("%s: duplicate region %q", p.Key, opt)
+				}
+				seen[opt] = true
+			}
+			// The default has to be one of the offered values, or coerce silently
+			// replaces it and the picker disagrees with what generation emits.
+			if d, _ := f.Default.(string); !seen[d] {
+				t.Errorf("%s: default region %q is not in the list", p.Key, d)
 			}
 		}
 	}

@@ -90,7 +90,7 @@ func TestNormaliseCoercesParams(t *testing.T) {
 		"root_block_device.volume_size": "40",          // a number arriving as a string
 		"associate_public_ip_address":   "yes",         // not a boolean
 		"injected":                      "rm -rf /",    // not in the schema at all
-		// "ami" omitted entirely
+		// "ami_os" omitted entirely
 	}
 	Normalise(&s)
 
@@ -107,8 +107,8 @@ func TestNormaliseCoercesParams(t *testing.T) {
 	if got["associate_public_ip_address"] != false {
 		t.Errorf("non-boolean not replaced by default: %#v", got["associate_public_ip_address"])
 	}
-	if got["ami"] != "ami-0c55b159cbfafe1f0" {
-		t.Errorf("missing param not filled from default: %#v", got["ami"])
+	if got[catalog.ParamAMIOS] != "Amazon Linux 2023" {
+		t.Errorf("missing param not filled from default: %#v", got[catalog.ParamAMIOS])
 	}
 }
 

@@ -211,6 +211,95 @@ Applied as the `Default` on ordinary editable fields.
 | GCE | no external IP unless the static-address toggle is on, shielded VM config |
 | DigitalOcean | droplet `ssh_keys` not password, `monitoring = true`, Spaces `acl = "private"` |
 
+### Regions
+
+AWS offers every region in the standard `aws` partition, 32 of them, sorted by code so the
+geographic prefixes group themselves. The other three providers still carry a short list of common
+choices.
+
+**GovCloud and China are deliberately absent.** `us-gov-*` and `cn-*` are separate partitions
+reached with separate accounts and different endpoints, so a configuration naming one would not
+work without provider changes infrachart does not make. Adding them means modelling partitions, not
+appending two strings.
+
+**Several regions are opt-in** — `af-south-1`, `ap-east-1`, `ap-south-2`, `ap-southeast-3` through
+`-7`, `ca-west-1`, `eu-central-2`, `eu-south-1`, `eu-south-2`, `il-central-1`, `me-central-1`,
+`me-south-1` and `mx-central-1`. They must be enabled on the account before use; a plan against a
+disabled one fails with an authentication error rather than anything that names the real problem.
+Nothing in the picker marks them, because a select's option is also its stored value.
+
+**A region option must be the bare code.** It reaches HCL verbatim as the provider's region, so a
+friendlier `eu-west-2 (London)` would be stored and emitted as written and fail at plan.
+`TestRegionOptionsAreCodes` enforces that no label characters appear in any provider's list, and
+that each default is one of its own options.
+
+### An AMI ID is region-specific, so the chart stores an OS instead
+
+`ami-0c55b159cbfafe1f0` was the catalog default and is valid only in us-east-1. An AMI ID names an
+image *in one region*, so any stored default is wrong everywhere else — and the region is now an
+account setting the user picks.
+
+So EC2 offers an **Operating system** select, and each preset emits a data source that resolves the
+ID at plan time in whatever region the account's provider is configured for.
+
+**Prefer a published parameter over a name pattern.** AWS and Canonical maintain public SSM
+parameters that point at the current image for whichever region is queried. Reading one assumes
+nothing about how anybody names their images:
+
+| Choice | Resolves via | Stock login |
+|---|---|---|
+| Amazon Linux 2023 | `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64` | `ec2-user` |
+| Ubuntu Server 24.04 LTS | `/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id` | `ubuntu` |
+| Windows Server 2022 | `/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base` | none — RDP, not SSH |
+| ECS-optimized (Amazon Linux 2023) | `/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id` | `ec2-user` |
+| Debian 12 | `data "aws_ami"`, owner `136693071363`, name `debian-12-amd64-*` | `admin` |
+| Custom AMI ID | no lookup; the literal is used as typed | — |
+
+Debian is the only name match left, because Debian publishes no parameter. Its naming is also the
+simplest of the five, which is the best case for a pattern.
+
+**This is a fix, not a preference.** The first version matched every preset on an image name, and
+`al2023-ami-2023.*-x86_64` matched nothing in ap-southeast-2 — an apply that failed with "Your
+query returned no results". A name pattern is a guess about someone else's naming convention, and
+there is no way to tell a correct guess from a wrong one without asking the API. A published
+parameter removes the guess.
+
+The cost is an IAM permission: reading one needs `ssm:GetParameters` where a name match needs
+`ec2:DescribeImages`. The plan also shows `ami = (sensitive value)`, because the provider marks a
+parameter's `value` sensitive regardless of the parameter being public.
+
+Where a name pattern is unavoidable, always scope it with `owners`. `most_recent` across every
+publisher would take whatever anyone happened to name similarly, which is a supply-chain problem
+rather than a convenience.
+
+All five are x86_64, matching the instance types the catalog offers. A Graviton instance type would
+need an architecture dimension here, not a longer list.
+
+**The stock login is documentation, not behaviour.** `Login user` defaults to `ec2-user` for every
+EC2 regardless of the image, so choosing Ubuntu or Debian means changing it by hand. Wiring the
+default to the OS choice needs a default that depends on another param, which the catalog has no
+way to express.
+
+**Ansible cannot reach Windows Server over SSH.** Choosing that image with Ansible enabled produces
+an inventory entry that can never connect. Nothing warns about it yet.
+
+#### Two things `tofu validate` cannot tell you
+
+**Validation never executes a data source.** It proves the arguments on `aws_ami` and
+`aws_ssm_parameter` are real, and nothing about whether a pattern matches an image or a parameter
+path exists. Either failure lands at *apply* — loudly, but only once someone is deploying, which is
+exactly how the Amazon Linux pattern reached a user. `TestAMIFiltersResolve` in the integration
+suite is the check that closes the gap: it resolves every preset through the AWS CLI, and skips
+without credentials. **A green run in an environment with no AWS access means nothing**, so it is
+worth running deliberately rather than assuming CI covered it.
+
+**`most_recent = true` means the resolved ID moves.** When AWS publishes a newer image the lookup
+returns a different ID, and the next apply replaces the instance. That is the right default for
+short-lived infrastructure, which is what this tool is for. The **Never replace on a newer AMI**
+toggle emits `lifecycle { ignore_changes = [ami] }` for anyone who wants an instance pinned once it
+is running. It shares the `lifecycle` block with the Ansible key precondition, and
+`TestPinAMICoexistsWithPrecondition` proves neither displaces the other.
+
 ### `root_block_device` is not always valid
 
 A container-backed or instance-store AMI has no root EBS volume, and Terraform **rejects
@@ -307,6 +396,98 @@ rule is not possible — report it, do not approximate it.
 **A rule against an ephemeral address rots silently.** The address changes on restart, the rule
 keeps the old value, and connectivity breaks with no signal. So generation refuses that rule and
 names the fix, rather than emitting it with a warning comment nobody reads.
+
+## Two rules that mean the same thing
+
+A chart can describe one permission twice: a host allowed out to the internet on 443 and out to
+something that resolves to the same address on the same port, or simply one connection carrying the
+same rule twice. They are different lines on the diagram and the same AWS permission.
+
+AWS refuses the second one outright:
+
+```
+InvalidPermission.Duplicate: the specified rule "peer: 0.0.0.0/0, TCP, from port: 80,
+to port: 80, ALLOW" already exists
+```
+
+That lands at **apply**, after part of the chart has already been created. `tofu validate` cannot
+see it, because each `aws_vpc_security_group_egress_rule` is perfectly valid on its own and the two
+only collide at the API.
+
+`dedupeRules` in `internal/tofu/emit.go` collapses them. Every provider's rules funnel through one
+loop, so that loop is the only place that has to know:
+
+- **Identity is everything but the comment** — asset, direction, protocol, ports, peer, peer kind.
+  A different port is a different permission and is still emitted.
+- **Comments are joined**, not discarded. A merged rule says `from X; also from Y`, because naming
+  one reason out of two misreports why the rule exists.
+- It is **not a tidiness pass**. Emitting both is a failed apply, not untidy output.
+
+The neighbouring case is already closed further upstream: a port range of `0-65535` would render
+identically to a `*` wildcard, and `model.Validate` rejects it with a message pointing at `*`
+before generation ever sees it.
+
+## What each provider's network gives you, and what it does not
+
+A firewall rule permits traffic. It does not deliver it. Reachability needs an address, a rule
+**and** a route, and only one of the four providers makes you build the route yourself.
+
+| Provider | Routing | Emitted here |
+|---|---|---|
+| AWS | none by default — a new VPC routes only within itself | VPC, two subnets, internet gateway, **route table + associations** |
+| Azure | system routes give a subnet internet access implicitly | resource group, vnet, subnet |
+| GCP | a default route to the internet gateway is created with the network | network, subnetwork |
+| DigitalOcean | droplets get a public interface | VPC |
+
+**AWS is the only one needing an explicit route**, and omitting it was a real bug: the generated
+configuration created an `aws_internet_gateway` and never routed anything to it, so both subnets
+were private. An instance could hold a public IP and allow port 22 and still refuse connections,
+because the reply had nowhere to go. The gateway was allocated and attached to nothing — the same
+class as a static IP that is reserved and never associated.
+
+The route table carries an **inline `route` block** rather than a separate `aws_route` resource:
+one resource instead of two, and the inline form is authoritative, so nothing can add a route
+behind the chart's back. Both subnets are associated, because an asset may land in either and a
+subnet left unassociated silently falls back to the VPC main route table, which has no gateway
+route.
+
+**`map_public_ip_on_launch` is deliberately not set.** It would give every instance in the subnet
+a public address, which contradicts the explicit-exposure model the whole tool is built on. The
+per-instance `associate_public_ip_address` field already covers it, and says so on the asset.
+
+### Why not Network ACLs
+
+"Handle ingress and egress VPC rules" sounds like the answer to an unreachable host. It is not,
+and this is recorded so it is not reached for again:
+
+- **They would not have fixed it.** The default NACL already allows everything; the missing route
+  was the whole problem.
+- **They are stateless.** Every rule needs a matching return rule on ephemeral ports 1024-65535.
+  That is the most common source of silently broken AWS networking, and it would double every
+  rule the chart produces. Security groups are stateful, which is also why a missing *egress*
+  rule can never break inbound SSH — the reply to an allowed inbound connection is permitted
+  automatically.
+- **They are per-subnet, and the chart is per-asset.** There is nowhere on the diagram to put one
+  without first introducing a subnet concept.
+- **GCP and DigitalOcean have no equivalent**, so supporting them would fragment the single
+  classification of exposure that `ui` and `tofu` share.
+
+The one thing security groups genuinely cannot do is **deny** a specific CIDR — they are
+allow-only. If that is ever needed, it is the reason to revisit NACLs. General defence in depth
+is not.
+
+### Reachable in theory is not reachable
+
+`unreachableWarnings` reports an asset allowed inbound from outside its own account that has no
+address anything out there could reach. Without it, such a chart generates cleanly, applies
+cleanly, and cannot be connected to — and the failure looks like a firewall problem.
+
+Only traffic from **outside the account** counts. A same-account peer resolves to a security group
+reference over private addressing and needs no public address, so warning about it would fire on
+the most common case in every chart.
+
+The check itself is `noPublicAddress` in `ansible.go`, shared with the inventory rather than
+copied. The two ask the same question, and two copies would drift.
 
 ## Firewall models — why generation is four jobs
 

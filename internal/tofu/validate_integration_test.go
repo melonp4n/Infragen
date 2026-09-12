@@ -177,3 +177,57 @@ func TestAnsibleChartValidates(t *testing.T) {
 		t.Fatalf("an Ansible chart failed validation:\n%s", got.Output)
 	}
 }
+
+// The check `tofu validate` cannot do.
+//
+// Validation loads provider schemas but never executes a data source, so it
+// proves most_recent, owners and filter are real arguments and nothing about
+// whether a name pattern matches a published image. A pattern that matches
+// nothing fails at apply with "Your query returned no results" — loud, but only
+// once someone is deploying.
+//
+// Skips without the AWS CLI or credentials, so it costs nothing in an environment
+// that cannot answer the question.
+func TestAMIFiltersResolve(t *testing.T) {
+	if _, err := exec.LookPath("aws"); err != nil {
+		t.Skip("aws CLI not installed")
+	}
+	if err := exec.Command("aws", "sts", "get-caller-identity").Run(); err != nil {
+		t.Skip("no AWS credentials available")
+	}
+	// One region is enough to prove a pattern is well formed. A pattern valid here
+	// and nowhere else would mean a region-specific image name, which none of these
+	// are — that is the whole point of resolving by name instead of by ID.
+	const region = "eu-west-2"
+
+	for _, p := range catalog.AMIPresets() {
+		t.Run(p.Label, func(t *testing.T) {
+			if p.Exact() {
+				out, err := exec.Command("aws", "ssm", "get-parameter",
+					"--region", region, "--name", p.SSMPath,
+					"--query", "Parameter.Value", "--output", "text").Output()
+				if err != nil {
+					t.Fatalf("parameter %s does not resolve in %s: %v", p.SSMPath, region, err)
+				}
+				// The parameter exists; it still has to hold an AMI ID rather than,
+				// say, the JSON blob some of the ECS paths return.
+				if got := strings.TrimSpace(string(out)); !strings.HasPrefix(got, "ami-") {
+					t.Errorf("parameter %s returned %q, which is not an AMI ID", p.SSMPath, got)
+				}
+				return
+			}
+			out, err := exec.Command("aws", "ec2", "describe-images",
+				"--region", region,
+				"--owners", p.Owner,
+				"--filters", "Name=name,Values="+p.Filter,
+				"--query", "length(Images)", "--output", "text").Output()
+			if err != nil {
+				t.Fatalf("describe-images failed: %v", err)
+			}
+			if got := strings.TrimSpace(string(out)); got == "0" || got == "None" {
+				t.Errorf("owner %s + filter %q matches no image in %s — an instance using this preset would fail at apply",
+					p.Owner, p.Filter, region)
+			}
+		})
+	}
+}

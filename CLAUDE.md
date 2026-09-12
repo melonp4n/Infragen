@@ -94,10 +94,27 @@ nothing more, which is how fifteen invented parameters survived until someone ac
   line and the apply succeeds. `ResourceType.AddressRequires` names the toggle that has to be on
   first; a warning that names the field label is the fix, not a reference that silently resolves to
   nothing.
+- **Two chart lines can be one cloud permission.** A host reaching the internet on 443 and reaching
+  something else that resolves to the same address are the same security group rule, and AWS refuses
+  the duplicate at apply with `InvalidPermission.Duplicate`. `dedupeRules` collapses them at the one
+  loop every provider funnels through; identity is the rule minus its comment, and the comments are
+  joined rather than dropped.
+- **An AMI ID names an image in one region, so it is never a usable default.** The old
+  `ami-0c55b159cbfafe1f0` worked in us-east-1 and nowhere else. The chart stores an OS choice and a
+  `data "aws_ami"` lookup resolves the ID for the account's region. The same caution applies to any
+  other region-scoped identifier.
+- **`tofu validate` does not execute data sources.** It proves a data source's arguments exist, not
+  that its filter matches anything. A filter matching nothing fails at apply, so it needs a real API
+  check — `TestAMIFiltersResolve`, which skips without AWS credentials.
 - **Some blocks are not optional-with-defaults, they are invalid.** `root_block_device` on an
   instance-store AMI is rejected outright, so sensible values do not help — the block must be
   absent. That is `ParamField.RequiresParam`, and such a gate defaults **on** where the fields it
   guards carry a security default (`encrypted`), so opting out is the deliberate act.
+- **A rule permits traffic; a route delivers it.** AWS emitted an internet gateway with no route
+  table, so both subnets were private and an instance with a public IP and an open port 22 still
+  refused connections. Reachability needs an address, a rule *and* a route. AWS is the only one of
+  the four that makes you build the route — and Network ACLs are not the answer to an unreachable
+  host, for the reasons in `TOFU-MAPPING.md`.
 - **A toggle that allocates something must also attach it.** Enabling a static public IP on Azure or
   GCP emitted the address resource and a comment saying to wire it up by hand, which is a setting
   that appears to work and does nothing. Attachment is a `Fixed` with `RequiresParam`, and every

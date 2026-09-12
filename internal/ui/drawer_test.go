@@ -240,3 +240,46 @@ func TestScriptFieldRendersATextarea(t *testing.T) {
 		t.Errorf("script body was truncated:\n%s", got)
 	}
 }
+
+// End-to-end against the real AWS catalog: the AMI ID box exists only under the
+// custom option. Offering it alongside a preset would invite an ID that
+// generation then ignores.
+func TestAMIFieldOnlyRendersForCustom(t *testing.T) {
+	render := func(os string) string {
+		t.Helper()
+		s := model.Session{
+			Version: model.SchemaVersion,
+			Accounts: []model.Account{{
+				ID: "acc_a", Name: "AWS", Provider: "aws",
+				Params: catalog.AccountDefaults("aws"),
+				Assets: []model.Asset{{
+					ID: "asset_a", Code: "EC2", Name: "Box",
+					Params: catalog.Defaults("aws", "EC2"),
+				}},
+			}},
+		}
+		s.Accounts[0].Assets[0].Params[catalog.ParamAMIOS] = os
+		model.Normalise(&s)
+
+		var buf bytes.Buffer
+		sel := Selection{Kind: "asset", AccountID: "acc_a", AssetID: "asset_a"}
+		if err := Drawer(s, sel).Render(context.Background(), &buf); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	preset := render("Amazon Linux 2023")
+	if strings.Contains(preset, `data-param="ami"`) {
+		t.Error("AMI ID box rendered while a preset is selected")
+	}
+	// The chooser itself must always be there, or the custom option is unreachable.
+	if !strings.Contains(preset, `data-param="`+catalog.ParamAMIOS+`"`) {
+		t.Error("the operating system select is missing")
+	}
+
+	custom := render(catalog.AMICustom)
+	if !strings.Contains(custom, `data-param="ami"`) {
+		t.Error("AMI ID box missing under the custom option, leaving no way to enter one")
+	}
+}
