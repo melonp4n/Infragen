@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"infrachart/internal/catalog"
 )
 
 // The seed chart is the fixture: it covers every node type, every line kind and
@@ -88,7 +90,7 @@ func TestNormaliseCoercesParams(t *testing.T) {
 		"root_block_device.volume_size": "40",          // a number arriving as a string
 		"associate_public_ip_address":   "yes",         // not a boolean
 		"injected":                      "rm -rf /",    // not in the schema at all
-		// "ami" omitted entirely
+		// "ami_os" omitted entirely
 	}
 	Normalise(&s)
 
@@ -105,8 +107,8 @@ func TestNormaliseCoercesParams(t *testing.T) {
 	if got["associate_public_ip_address"] != false {
 		t.Errorf("non-boolean not replaced by default: %#v", got["associate_public_ip_address"])
 	}
-	if got["ami"] != "ami-0c55b159cbfafe1f0" {
-		t.Errorf("missing param not filled from default: %#v", got["ami"])
+	if got[catalog.ParamAMIOS] != "Amazon Linux 2023" {
+		t.Errorf("missing param not filled from default: %#v", got[catalog.ParamAMIOS])
 	}
 }
 
@@ -257,5 +259,33 @@ func TestValidationAndParsingAgree(t *testing.T) {
 		case !accepted && !any && lo != 0:
 			t.Errorf("port %q was rejected but parses as a concrete range %d-%d", port, lo, hi)
 		}
+	}
+}
+
+// A startup script is the one param type that may contain newlines. Names and
+// notes still may not — that guard is what keeps a control character out of a
+// resource name.
+func TestScriptParamsAllowNewlines(t *testing.T) {
+	script := catalog.ParamField{Key: "user_data", Type: catalog.FieldScript, Default: ""}
+	name := catalog.ParamField{Key: "ami", Type: catalog.FieldText, Default: "fallback"}
+
+	body := "#!/bin/bash\nset -euo pipefail\napt-get update\n"
+	if got := coerce(script, body); got != body {
+		t.Errorf("script was rejected or altered: %q", got)
+	}
+	if got := coerce(name, "a\nb"); got != "fallback" {
+		t.Errorf("a newline in a text param was kept: %q", got)
+	}
+
+	// A null byte would corrupt the generated file whatever the field type.
+	if got := coerce(script, "ok\x00bad"); got != "" {
+		t.Errorf("null byte survived in a script: %q", got)
+	}
+	// Scripts get a much larger cap than names, but still a cap.
+	if got := coerce(script, strings.Repeat("x", maxScriptLen+1)); got != "" {
+		t.Error("an oversized script was accepted")
+	}
+	if got := coerce(script, strings.Repeat("x", maxNameLen+1)); got == "" {
+		t.Error("a script longer than a name was rejected — the caps are not separate")
 	}
 }

@@ -17,10 +17,13 @@ import (
 // is what keeps generated HCL free of arbitrary user-shaped values.
 
 const (
-	maxNameLen  = 200
-	maxAccounts = 200
-	maxAssets   = 500
-	maxRules    = 200
+	maxNameLen = 200
+	// A startup script is a file, not a name, so it gets a far larger cap. Cloud
+	// providers reject user data beyond about 16KB anyway.
+	maxScriptLen = 16 << 10
+	maxAccounts  = 200
+	maxAssets    = 500
+	maxRules     = 200
 )
 
 var (
@@ -262,6 +265,19 @@ func Normalise(s *Session) {
 	}
 	for i := range s.Accounts {
 		acc := &s.Accounts[i]
+		// Account params go through the same coercion as an asset's, so an imported
+		// chart cannot carry a region the provider does not offer or a key of the
+		// wrong type into generation.
+		if p, ok := catalog.Get(acc.Provider); ok {
+			clean := make(map[string]any, len(p.AccountParams))
+			for _, f := range p.AccountParams {
+				key := f.ParamKey()
+				clean[key] = coerce(f, acc.Params[key])
+			}
+			acc.Params = clean
+		} else if acc.Params == nil {
+			acc.Params = map[string]any{}
+		}
 		for j := range acc.Assets {
 			as := &acc.Assets[j]
 			t, ok := catalog.Type(acc.Provider, as.Code)
@@ -332,6 +348,14 @@ func coerce(f catalog.ParamField, v any) any {
 			}
 		}
 		return f.Default
+	case catalog.FieldScript:
+		// Newlines are the point here. Null bytes are not, and would corrupt the
+		// generated file.
+		s, ok := v.(string)
+		if !ok || len(s) > maxScriptLen || strings.ContainsRune(s, 0) {
+			return f.Default
+		}
+		return s
 	default:
 		s, ok := v.(string)
 		if !ok || len(s) > maxNameLen || strings.ContainsAny(s, "\x00\n\r") {

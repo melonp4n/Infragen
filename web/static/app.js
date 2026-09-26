@@ -25,6 +25,9 @@
   const INTERNET = 'internet'
   const EXTIP = 'extip'
   const ASSET = 'asset'
+  // Not a node type — an account is a container, so it is never a connection
+  // endpoint. It is a selection kind because it has settings to edit.
+  const ACCOUNT = 'account'
 
   boot()
 
@@ -353,6 +356,10 @@
       const el = canvas.querySelector('.extip-node[data-extip-id="' + selection.id + '"]')
       if (el) el.classList.add('selected')
     }
+    if (selection && selection.kind === ACCOUNT) {
+      const el = canvas.querySelector('.account[data-account-id="' + selection.accountId + '"]')
+      if (el) el.classList.add('selected')
+    }
     updateLines()
     openDrawer()
   }
@@ -374,7 +381,11 @@
     const y = 120 + Math.floor(n / 3) * 300
     const html = await postForHTML('/api/render/account', { id: '', name, provider, x, y, assets: [] })
     const el = insert(html)
-    state.accounts.push({ id: el.dataset.accountId, name, provider, x, y, assets: [] })
+    const params = {}
+    for (const f of catalog[provider].accountParams || []) {
+      params[f.key] = f.default
+    }
+    state.accounts.push({ id: el.dataset.accountId, name, provider, x, y, params, assets: [] })
   }
 
   async function addExtIp(label, ip) {
@@ -510,6 +521,24 @@
     }
   }
 
+  // The generated configuration is already in the page, so this copies what the
+  // user is looking at rather than asking the server to generate it a second time.
+  async function copyGeneratedTF() {
+    const label = document.querySelector('#btn-copy-tf [data-copy-label]')
+    try {
+      await navigator.clipboard.writeText(document.getElementById('generate-output').textContent)
+    } catch (err) {
+      // Clipboard access can be refused outright, and a silent no-op would read
+      // as a copy that worked.
+      label.textContent = 'Press Ctrl+C'
+      window.getSelection().selectAllChildren(document.getElementById('generate-output'))
+      setTimeout(() => { label.textContent = 'Copy' }, 2400)
+      return
+    }
+    label.textContent = 'Copied'
+    setTimeout(() => { label.textContent = 'Copy' }, 1200)
+  }
+
   function validationMessage(result) {
     const tool = result.tool || 'validate'
     if (result.ok) {
@@ -557,7 +586,7 @@
       return
     }
     // Scopes the provider colour custom properties for the panel's flag badge.
-    const acc = selection.kind === ASSET ? findAccount(selection.accountId) : null
+    const acc = selection.accountId ? findAccount(selection.accountId) : null
     drawer.dataset.provider = acc ? acc.provider : ''
     try {
       drawer.innerHTML = await postForHTML('/api/render/drawer', { session: state, selection })
@@ -584,8 +613,16 @@
 
     const paramKey = target.dataset.param
     if (paramKey) {
-      const asset = selectedAsset()
-      if (asset) asset.params[paramKey] = readParam(target)
+      // An account and an asset both render through paramField, so the owner of
+      // the field is whichever the drawer currently has selected.
+      const owner = selection && selection.kind === ACCOUNT ? findAccount(selection.accountId) : selectedAsset()
+      if (!owner) return
+      owner.params[paramKey] = readParam(target)
+      // A directive that gates other fields changes which fields exist, so the
+      // panel has to be rebuilt. Ordinary edits deliberately do not re-render —
+      // that would steal focus mid-keystroke — but a gate is only ever a
+      // checkbox, so there is no keystroke to interrupt.
+      if (gatesOtherParams(paramKey)) openDrawer()
       return
     }
 
@@ -609,6 +646,15 @@
       return
     }
 
+    if (target.id === 'account-display-name') {
+      const acc = findAccount(selection.accountId)
+      if (!acc) return
+      acc.name = target.value
+      canvas.querySelector('.account[data-account-id="' + acc.id + '"] .account-name').textContent = target.value
+      updateLines()
+      return
+    }
+
     if (target.id === 'extip-label-input' || target.id === 'extip-ip-input') {
       const e = findExtIp(selection.id)
       if (!e) return
@@ -624,6 +670,22 @@
       }
       updateLines()
     }
+  }
+
+  // Whether any field in the selected item's form is gated on this one. Read from
+  // the catalog rather than a hardcoded list, so a new gate needs no change here.
+  function gatesOtherParams(paramKey) {
+    let fields = null
+    if (selection && selection.kind === ACCOUNT) {
+      const acc = findAccount(selection.accountId)
+      fields = acc && catalog[acc.provider].accountParams
+    } else {
+      const asset = selectedAsset()
+      const acc = asset && findAccount(selection.accountId)
+      const type = acc && catalog[acc.provider].types.find(t => t.code === asset.code)
+      fields = type && type.params
+    }
+    return (fields || []).some(f => f.requiresParam === paramKey)
   }
 
   function readParam(el) {
@@ -668,6 +730,7 @@
   function deleteSelected() {
     if (!selection) return
     if (selection.kind === 'conn') removeConnection(selection.id)
+    else if (selection.kind === ACCOUNT) removeAccount(selection.accountId)
     else if (selection.kind === ASSET) removeAsset(selection.accountId, selection.assetId)
     else if (selection.kind === EXTIP) removeExtIp(selection.id)
   }
@@ -701,7 +764,7 @@
       connectFrom = null
       clearConnecting()
     }
-    if (event.target.closest('.account-close, .asset-close, .extip-close')) return
+    if (event.target.closest('.account-close, .asset-close, .extip-close, .account-settings')) return
     // The account name is edited in place, so it must not start a drag.
     if (event.target.closest('.account-name')) return
 
@@ -774,6 +837,11 @@
     const closeExtIp = event.target.closest('.extip-close')
     if (closeExtIp) {
       removeExtIp(closeExtIp.closest('.extip-node').dataset.extipId)
+      return
+    }
+    const settings = event.target.closest('.account-settings')
+    if (settings) {
+      select({ kind: ACCOUNT, accountId: settings.closest('.account').dataset.accountId })
       return
     }
     const addTile = event.target.closest('.add-tile')
@@ -930,6 +998,7 @@
       }
     })
 
+    document.getElementById('btn-copy-tf').addEventListener('click', copyGeneratedTF)
     document.getElementById('btn-validate').addEventListener('click', runValidation)
 
     document.getElementById('btn-export').addEventListener('click', exportSession)

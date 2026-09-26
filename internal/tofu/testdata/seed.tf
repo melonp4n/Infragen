@@ -25,6 +25,13 @@ terraform {
   }
 }
 
+# Resolved SSH keys: per resource, then per account, then deployment-wide.
+locals {
+  asset_3_ssh_key = coalesce(var.acc_1_ssh_public_key, var.ssh_public_key, "")
+  asset_7_ssh_key = coalesce(var.acc_3_ssh_public_key, var.ssh_public_key, "")
+  asset_9_ssh_key = coalesce(var.acc_4_ssh_public_key, var.ssh_public_key, "")
+}
+
 # ---------------------------------------------------------------
 # AWS Account 1 (AWS)
 # ---------------------------------------------------------------
@@ -68,6 +75,27 @@ resource "aws_subnet" "acc_1_b" {
 resource "aws_internet_gateway" "acc_1" {
   provider = aws.acc_1
   vpc_id   = aws_vpc.acc_1.id
+}
+
+resource "aws_route_table" "acc_1" {
+  provider = aws.acc_1
+  vpc_id   = aws_vpc.acc_1.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.acc_1.id
+  }
+}
+
+resource "aws_route_table_association" "acc_1" {
+  provider       = aws.acc_1
+  subnet_id      = aws_subnet.acc_1.id
+  route_table_id = aws_route_table.acc_1.id
+}
+
+resource "aws_route_table_association" "acc_1_b" {
+  provider       = aws.acc_1
+  subnet_id      = aws_subnet.acc_1_b.id
+  route_table_id = aws_route_table.acc_1.id
 }
 
 # AWS Account 1 → Edge CDN
@@ -114,11 +142,11 @@ resource "aws_instance" "asset_3" {
   provider                    = aws.acc_1
   tags                        = { Name = "Web tier EC2" }
   instance_type               = "t3.micro"
-  ami                         = "ami-0c55b159cbfafe1f0"
-  key_name                    = ""
   associate_public_ip_address = false
   monitoring                  = false
   subnet_id                   = aws_subnet.acc_1.id
+  key_name                    = one(aws_key_pair.asset_3_key[*].key_name)
+  ami                         = data.aws_ssm_parameter.asset_3_ami.value
   vpc_security_group_ids      = [aws_security_group.asset_3.id]
   metadata_options {
     http_tokens = "required"
@@ -127,6 +155,20 @@ resource "aws_instance" "asset_3" {
     volume_size = 20
     encrypted   = true
   }
+}
+
+# Web tier EC2 requires this
+resource "aws_key_pair" "asset_3_key" {
+  count      = local.asset_3_ssh_key != "" ? 1 : 0
+  provider   = aws.acc_1
+  key_name   = "asset-3"
+  public_key = local.asset_3_ssh_key
+}
+
+# Web tier EC2 resolves its image here, so the id is right for the account's region
+data "aws_ssm_parameter" "asset_3_ami" {
+  provider = aws.acc_1
+  name     = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 # AWS Account 1 → Orders DB
@@ -290,6 +332,27 @@ resource "aws_internet_gateway" "acc_2" {
   vpc_id   = aws_vpc.acc_2.id
 }
 
+resource "aws_route_table" "acc_2" {
+  provider = aws.acc_2
+  vpc_id   = aws_vpc.acc_2.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.acc_2.id
+  }
+}
+
+resource "aws_route_table_association" "acc_2" {
+  provider       = aws.acc_2
+  subnet_id      = aws_subnet.acc_2.id
+  route_table_id = aws_route_table.acc_2.id
+}
+
+resource "aws_route_table_association" "acc_2_b" {
+  provider       = aws.acc_2
+  subnet_id      = aws_subnet.acc_2_b.id
+  route_table_id = aws_route_table.acc_2.id
+}
+
 # AWS Account 2 → Image resize fn
 resource "aws_lambda_function" "asset_5" {
   provider      = aws.acc_2
@@ -367,7 +430,7 @@ provider "digitalocean" {
 variable "acc_3_region" {
   description = "Region for DigitalOcean"
   type        = string
-  default     = "nyc3"
+  default     = "lon1"
 }
 
 resource "digitalocean_vpc" "acc_3" {
@@ -384,8 +447,16 @@ resource "digitalocean_droplet" "asset_7" {
   region     = "lon1"
   monitoring = true
   backups    = false
-  ssh_keys   = var.acc_3_ssh_key_ids
   vpc_uuid   = digitalocean_vpc.acc_3.id
+  ssh_keys   = digitalocean_ssh_key.asset_7_key[*].id
+}
+
+# App droplet requires this
+resource "digitalocean_ssh_key" "asset_7_key" {
+  count      = local.asset_7_ssh_key != "" ? 1 : 0
+  provider   = digitalocean.acc_3
+  name       = "asset-7"
+  public_key = local.asset_7_ssh_key
 }
 
 # DigitalOcean → Managed PG
@@ -474,7 +545,7 @@ resource "azurerm_linux_virtual_machine" "asset_9" {
   }
   admin_ssh_key {
     username   = "azureuser"
-    public_key = var.acc_4_ssh_public_key
+    public_key = local.asset_9_ssh_key
   }
 }
 
@@ -500,6 +571,30 @@ data "aws_ec2_managed_prefix_list" "com_amazonaws_global_cloudfront_origin_facin
 # Values the chart cannot supply. Sensitive ones have no default, so
 # `tofu plan` prompts for them rather than storing a secret here.
 
+variable "ssh_public_key" {
+  description = "SSH public key for every Ansible host. export TF_VAR_ssh_public_key=\"$(cat ~/.ssh/id_ed25519.pub)\""
+  type        = string
+  default     = ""
+}
+
+variable "acc_1_ssh_public_key" {
+  description = "SSH public key for Ansible hosts in AWS Account 1, overriding the deployment key"
+  type        = string
+  default     = ""
+}
+
+variable "acc_3_ssh_public_key" {
+  description = "SSH public key for Ansible hosts in DigitalOcean, overriding the deployment key"
+  type        = string
+  default     = ""
+}
+
+variable "acc_4_ssh_public_key" {
+  description = "SSH public key for Ansible hosts in Azure, overriding the deployment key"
+  type        = string
+  default     = ""
+}
+
 variable "asset_1_origin_domain" {
   description = "Origin the distribution fetches from"
   type        = string
@@ -510,18 +605,6 @@ variable "asset_5_package" {
   description = "Path to the deployment package zip"
   type        = string
   default     = "lambda.zip"
-}
-
-variable "acc_3_ssh_key_ids" {
-  description = "DigitalOcean SSH key IDs or fingerprints"
-  type        = list(string)
-  default     = []
-}
-
-variable "acc_4_ssh_public_key" {
-  description = "SSH public key for Linux virtual machines"
-  type        = string
-  sensitive   = true
 }
 
 # Hardcoded addresses. Not managed here — their CIDRs appear in the rules above.

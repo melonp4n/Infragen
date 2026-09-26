@@ -26,6 +26,14 @@ terraform {
   }
 }
 
+# Resolved SSH keys: per resource, then per account, then deployment-wide.
+locals {
+  asset_aws_ec2_ssh_key          = coalesce(var.acc_aws_ssh_public_key, var.ssh_public_key, "")
+  asset_azure_vm_ssh_key         = coalesce(var.acc_azure_ssh_public_key, var.ssh_public_key, "")
+  asset_digitalocean_drp_ssh_key = coalesce(var.acc_digitalocean_ssh_public_key, var.ssh_public_key, "")
+  asset_gcp_gce_ssh_key          = coalesce(var.acc_gcp_ssh_public_key, var.ssh_public_key, "")
+}
+
 # ---------------------------------------------------------------
 # AWS (AWS)
 # ---------------------------------------------------------------
@@ -71,16 +79,37 @@ resource "aws_internet_gateway" "acc_aws" {
   vpc_id   = aws_vpc.acc_aws.id
 }
 
+resource "aws_route_table" "acc_aws" {
+  provider = aws.acc_aws
+  vpc_id   = aws_vpc.acc_aws.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.acc_aws.id
+  }
+}
+
+resource "aws_route_table_association" "acc_aws" {
+  provider       = aws.acc_aws
+  subnet_id      = aws_subnet.acc_aws.id
+  route_table_id = aws_route_table.acc_aws.id
+}
+
+resource "aws_route_table_association" "acc_aws_b" {
+  provider       = aws.acc_aws
+  subnet_id      = aws_subnet.acc_aws_b.id
+  route_table_id = aws_route_table.acc_aws.id
+}
+
 # AWS → EC2 instance
 resource "aws_instance" "asset_aws_ec2" {
   provider                    = aws.acc_aws
   tags                        = { Name = "EC2 instance" }
   instance_type               = "t3.micro"
-  ami                         = "ami-0c55b159cbfafe1f0"
-  key_name                    = ""
   associate_public_ip_address = false
   monitoring                  = false
   subnet_id                   = aws_subnet.acc_aws.id
+  key_name                    = one(aws_key_pair.asset_aws_ec2_key[*].key_name)
+  ami                         = data.aws_ssm_parameter.asset_aws_ec2_ami.value
   metadata_options {
     http_tokens = "required"
   }
@@ -88,6 +117,20 @@ resource "aws_instance" "asset_aws_ec2" {
     volume_size = 20
     encrypted   = true
   }
+}
+
+# EC2 instance requires this
+resource "aws_key_pair" "asset_aws_ec2_key" {
+  count      = local.asset_aws_ec2_ssh_key != "" ? 1 : 0
+  provider   = aws.acc_aws
+  key_name   = "asset-aws-ec2"
+  public_key = local.asset_aws_ec2_ssh_key
+}
+
+# EC2 instance resolves its image here, so the id is right for the account's region
+data "aws_ssm_parameter" "asset_aws_ec2_ami" {
+  provider = aws.acc_aws
+  name     = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 # AWS → Lambda
@@ -318,7 +361,7 @@ resource "azurerm_linux_virtual_machine" "asset_azure_vm" {
   }
   admin_ssh_key {
     username   = "azureuser"
-    public_key = var.acc_azure_ssh_public_key
+    public_key = local.asset_azure_vm_ssh_key
   }
 }
 
@@ -538,7 +581,7 @@ provider "digitalocean" {
 variable "acc_digitalocean_region" {
   description = "Region for DigitalOcean"
   type        = string
-  default     = "nyc3"
+  default     = "lon1"
 }
 
 resource "digitalocean_vpc" "acc_digitalocean" {
@@ -555,8 +598,16 @@ resource "digitalocean_droplet" "asset_digitalocean_drp" {
   region     = "lon1"
   monitoring = true
   backups    = false
-  ssh_keys   = var.acc_digitalocean_ssh_key_ids
   vpc_uuid   = digitalocean_vpc.acc_digitalocean.id
+  ssh_keys   = digitalocean_ssh_key.asset_digitalocean_drp_key[*].id
+}
+
+# Droplet requires this
+resource "digitalocean_ssh_key" "asset_digitalocean_drp_key" {
+  count      = local.asset_digitalocean_drp_ssh_key != "" ? 1 : 0
+  provider   = digitalocean.acc_digitalocean
+  name       = "asset-digitalocean-drp"
+  public_key = local.asset_digitalocean_drp_ssh_key
 }
 
 # DigitalOcean → App platform
@@ -683,6 +734,7 @@ resource "google_compute_instance" "asset_gcp_gce" {
   name         = "asset-gcp-gce"
   machine_type = "e2-medium"
   zone         = "europe-west2-a"
+  metadata     = local.asset_gcp_gce_ssh_key != "" ? { ssh-keys = "ansible:${local.asset_gcp_gce_ssh_key}" } : {}
   boot_disk {
     initialize_params {
       image = "debian-cloud/debian-12"
@@ -818,6 +870,36 @@ resource "google_storage_bucket" "asset_gcp_cdn_bucket" {
 # Values the chart cannot supply. Sensitive ones have no default, so
 # `tofu plan` prompts for them rather than storing a secret here.
 
+variable "ssh_public_key" {
+  description = "SSH public key for every Ansible host. export TF_VAR_ssh_public_key=\"$(cat ~/.ssh/id_ed25519.pub)\""
+  type        = string
+  default     = ""
+}
+
+variable "acc_aws_ssh_public_key" {
+  description = "SSH public key for Ansible hosts in AWS, overriding the deployment key"
+  type        = string
+  default     = ""
+}
+
+variable "acc_azure_ssh_public_key" {
+  description = "SSH public key for Ansible hosts in Azure, overriding the deployment key"
+  type        = string
+  default     = ""
+}
+
+variable "acc_digitalocean_ssh_public_key" {
+  description = "SSH public key for Ansible hosts in DigitalOcean, overriding the deployment key"
+  type        = string
+  default     = ""
+}
+
+variable "acc_gcp_ssh_public_key" {
+  description = "SSH public key for Ansible hosts in GCP, overriding the deployment key"
+  type        = string
+  default     = ""
+}
+
 variable "asset_aws_btype_package" {
   description = "Path to the deployment package zip"
   type        = string
@@ -836,12 +918,6 @@ variable "asset_aws_cdn_origin_domain" {
   default     = "origin.example.com"
 }
 
-variable "acc_azure_ssh_public_key" {
-  description = "SSH public key for Linux virtual machines"
-  type        = string
-  sensitive   = true
-}
-
 variable "asset_azure_sql_sql_password" {
   description = "SQL server administrator password"
   type        = string
@@ -852,12 +928,6 @@ variable "asset_azure_cdn_origin_host" {
   description = "Origin host the CDN fetches from"
   type        = string
   default     = "origin.example.com"
-}
-
-variable "acc_digitalocean_ssh_key_ids" {
-  description = "DigitalOcean SSH key IDs or fingerprints"
-  type        = list(string)
-  default     = []
 }
 
 variable "acc_gcp_project" {

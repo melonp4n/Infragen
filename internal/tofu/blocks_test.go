@@ -9,7 +9,7 @@ import (
 )
 
 func TestExpandPlaceholders(t *testing.T) {
-	got := expand("azurerm_resource_group.{{account}}.name / {{asset}} / {{region}}", "acc_1", "asset_9")
+	got := expand("azurerm_resource_group.{{account}}.name / {{asset}} / {{region}}", exprCtx{accountID: "acc_1", assetID: "asset_9"})
 	want := "azurerm_resource_group.acc_1.name / asset_9 / var.acc_1_region"
 	if got != want {
 		t.Errorf("expand = %q, want %q", got, want)
@@ -20,7 +20,7 @@ func TestExpandPlaceholders(t *testing.T) {
 // or a reference to another resource would be mangled.
 func TestExpandLeavesHCLInterpolationAlone(t *testing.T) {
 	in := "${aws_eip.{{asset}}.public_ip}/32"
-	if got := expand(in, "acc_1", "asset_2"); got != "${aws_eip.asset_2.public_ip}/32" {
+	if got := expand(in, exprCtx{accountID: "acc_1", assetID: "asset_2"}); got != "${aws_eip.asset_2.public_ip}/32" {
 		t.Errorf("expand = %q", got)
 	}
 }

@@ -18,6 +18,9 @@ func init() {
 			{Key: "region", Expr: "{{region}}"},
 			{Key: "project", Expr: "var.{{account}}_project"},
 		},
+		AccountParams: AccountSettings([]string{
+			"europe-west1", "europe-west2", "europe-west4", "us-central1", "us-east1", "asia-southeast1",
+		}, "europe-west2"),
 		Variables: []Variable{{
 			Name: "{{account}}_project", Description: "GCP project ID", Default: `"my-project"`,
 		}},
@@ -27,19 +30,31 @@ func init() {
 				Network: NetFirewalled, AddressKind: AddrEphemeralIP,
 				AddressAttr: "network_interface[0].access_config[0].nat_ip",
 				StaticAddr:  &StaticAddress{TofuType: "google_compute_address", Attr: "address"},
+				// No access_config means no public address at all, and the attribute
+				// above would index a block that does not exist.
+				AddressRequires: ParamStaticPublicIP,
 				Fixed: []Fixed{
 					{Block: "network_interface", Key: "subnetwork", Expr: "google_compute_subnetwork.{{account}}.id"},
+					// access_config is what gives the instance a public address, and
+					// nat_ip is what makes that address the reserved one.
+					{Block: "network_interface.access_config", Key: "nat_ip",
+						Expr: "google_compute_address.{{asset}}.address", RequiresParam: ParamStaticPublicIP},
+					{Key: "metadata",
+						Expr: `{{sshkey}} != "" ? { ssh-keys = "{{sshuser}}:${{{sshkey}}}" } : {}`},
 				},
-				Params: []ParamField{
+				Params: append([]ParamField{
 					StaticAddressToggle(),
 					{Key: "machine_type", Label: "Machine type", Type: FieldSelect, Options: []string{"e2-micro", "e2-medium", "n2-standard-2", "c2-standard-4"}, Default: "e2-medium"},
 					{Key: "zone", Label: "Zone", Type: FieldText, Default: "europe-west2-a"},
 					{Key: "image", Block: "boot_disk.initialize_params", Label: "Boot image", Type: FieldText, Default: "debian-cloud/debian-12"},
+					// Google spells this as a top-level argument rather than inside the
+					// metadata map, which is the one that would need special handling.
+					{Key: "metadata_startup_script", Label: "Startup script", Type: FieldScript, Default: "", Advanced: true},
 					{Key: "size", Block: "boot_disk.initialize_params", Label: "Boot disk (GB)", Type: FieldNumber, Default: 10, Advanced: true},
 					// Shielded VM: measured boot and rootkit protection.
 					{Key: "enable_secure_boot", Block: "shielded_instance_config", Label: "Secure boot", Type: FieldBoolean, Default: true, Advanced: true},
 					{Key: "enable_vtpm", Block: "shielded_instance_config", Label: "Virtual TPM", Type: FieldBoolean, Default: true, Advanced: true},
-				},
+				}, sshAndAnsible("ansible")...),
 			},
 			{
 				Code: "GCF", Name: "Cloud function", TofuType: "google_cloudfunctions2_function",

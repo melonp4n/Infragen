@@ -63,6 +63,15 @@ nothing more, which is how fifteen invented parameters survived until someone ac
 - **Never emit a firewall rule for a `NetServiceEndpoint` asset.** S3, Lambda, Blob, Spaces and
   App Platform have no firewall — access is IAM-governed. A rule for them applies cleanly and
   controls nothing, which is worse than no output because it looks like the tool worked.
+- **Never generate an SSH key, in the app or in Terraform.** A public key is the user's to supply.
+  `tls_private_key` would put the private half in state in plaintext, and ephemeral resources cannot
+  substitute — see the ruled-out investigation in `TOFU-MAPPING.md` before proposing it again.
+- **An inventory address and a firewall-rule address are different questions.** A rule persists
+  while the address moves, so an ephemeral IP makes it stale. An inventory is rewritten every apply,
+  so an ephemeral IP is correct there. Merging the two silently produced no inventory at all.
+- **Declare a Terraform variable from the reference, not from the flag that usually implies it.**
+  The SSH key variables were declared when Ansible was on, which left a plain Azure VM — which needs
+  a key regardless — referencing variables that did not exist.
 - **A blank port means unspecified, never "all ports".** Allowing everything is typed as `*`.
   Blank is fail-open: an abandoned half-written rule would open every port on the asset. It is
   accepted while editing so the drawer still renders, then refused at generation with a warning.
@@ -80,3 +89,33 @@ nothing more, which is how fifteen invented parameters survived until someone ac
   If a type needs special-casing, extend the catalog model instead.
 - **Nil slices marshal to JSON `null`, and the browser expects arrays.** Anything that hands a
   session to the browser goes through `model.Normalise` first.
+- **An address attribute that exists is not an address that is populated.** `aws_instance.public_ip`
+  is an empty string on an instance with no public IP, so a reference to it writes a blank inventory
+  line and the apply succeeds. `ResourceType.AddressRequires` names the toggle that has to be on
+  first; a warning that names the field label is the fix, not a reference that silently resolves to
+  nothing.
+- **Two chart lines can be one cloud permission.** A host reaching the internet on 443 and reaching
+  something else that resolves to the same address are the same security group rule, and AWS refuses
+  the duplicate at apply with `InvalidPermission.Duplicate`. `dedupeRules` collapses them at the one
+  loop every provider funnels through; identity is the rule minus its comment, and the comments are
+  joined rather than dropped.
+- **An AMI ID names an image in one region, so it is never a usable default.** The old
+  `ami-0c55b159cbfafe1f0` worked in us-east-1 and nowhere else. The chart stores an OS choice and a
+  `data "aws_ami"` lookup resolves the ID for the account's region. The same caution applies to any
+  other region-scoped identifier.
+- **`tofu validate` does not execute data sources.** It proves a data source's arguments exist, not
+  that its filter matches anything. A filter matching nothing fails at apply, so it needs a real API
+  check — `TestAMIFiltersResolve`, which skips without AWS credentials.
+- **Some blocks are not optional-with-defaults, they are invalid.** `root_block_device` on an
+  instance-store AMI is rejected outright, so sensible values do not help — the block must be
+  absent. That is `ParamField.RequiresParam`, and such a gate defaults **on** where the fields it
+  guards carry a security default (`encrypted`), so opting out is the deliberate act.
+- **A rule permits traffic; a route delivers it.** AWS emitted an internet gateway with no route
+  table, so both subnets were private and an instance with a public IP and an open port 22 still
+  refused connections. Reachability needs an address, a rule *and* a route. AWS is the only one of
+  the four that makes you build the route — and Network ACLs are not the answer to an unreachable
+  host, for the reasons in `TOFU-MAPPING.md`.
+- **A toggle that allocates something must also attach it.** Enabling a static public IP on Azure or
+  GCP emitted the address resource and a comment saying to wire it up by hand, which is a setting
+  that appears to work and does nothing. Attachment is a `Fixed` with `RequiresParam`, and every
+  place that walks `Fixed` has to honour that gate — `companionResource` did not.

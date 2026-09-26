@@ -31,9 +31,12 @@ type ParamField struct {
     Label     string
     Type      string
     Options   []string
+    Wrap      string    // wraps the value, e.g. "base64encode(%s)"
     Default   any       // for a security-relevant field, this IS the secure value
     Advanced  bool      // sits behind the drawer's disclosure
     Directive bool      // steers generation, never emitted as an argument
+    RequiresParam string // emit and show only when this directive is satisfied
+    RequiresValue string // narrows that gate from "is on" to "equals this"
 }
 
 // Fixed is a required argument with exactly one sensible answer and no user
@@ -96,6 +99,83 @@ type Provider struct {
 | `f.ParamKey()` | how a field is keyed in `Asset.Params` — `Block + "." + Key`, or just `Key` at top level |
 | `rt.Arguments()` | the params that are real HCL arguments — **emitters must use this**, not `Params` |
 | `StaticAddressToggle()` | the ready-made `static_public_ip` param to attach alongside a `StaticAddr` |
+
+## Optional blocks
+
+`RequiresParam` on a `ParamField` names a boolean directive that must be on before the field is
+emitted **or shown**. It exists for a block a resource may not accept at all, rather than one whose
+values are merely a matter of taste.
+
+EC2's root volume is the case. `root_block_device` is invalid on a container-backed or
+instance-store AMI — Terraform rejects the block outright, so giving it sensible values does not
+help; it has to be absent.
+
+```go
+{Key: ParamRootBlockDevice, Label: "Manage root volume", Type: FieldBoolean, Default: true, Directive: true, Advanced: true},
+{Key: "volume_size", Block: "root_block_device", ..., RequiresParam: ParamRootBlockDevice},
+{Key: "encrypted",   Block: "root_block_device", ..., RequiresParam: ParamRootBlockDevice},
+```
+
+Three things about this pattern:
+
+- **The gate defaults on.** Most AMIs are EBS-backed, and `encrypted` defaults to `true` — a
+  security default. A gate defaulting off would quietly remove root volume encryption from every
+  new instance, so the minority case is the one that opts out.
+- **The gated fields are hidden, not disabled**, by `splitParams` in `internal/ui/drawer.go`. A
+  visible field whose value generation drops is worse than no field.
+- **Flipping the gate re-renders the drawer**, because it changes which fields exist.
+  `gatesOtherParams()` in `app.js` reads the catalog to decide, so a new gate needs no change
+  there. Ordinary param edits deliberately do not re-render, but a gate is always a checkbox, so
+  there is no keystroke to interrupt.
+
+`Fixed` and `Companion` carry the same field, and every loop that walks them honours it.
+
+### Choosing between several options
+
+`RequiresValue` narrows the gate from "the directive is on" to "the directive equals this string",
+so one select can choose between several mutually exclusive companions. The AMI presets are why it
+exists: each operating system is one `data "aws_ami"` companion gated on its own value of the same
+select, and the `Custom AMI ID` option matches none of them, which is what leaves the `ami`
+argument to be typed by hand instead.
+
+Equality is the only comparison, deliberately. A negated gate would let two branches that write the
+same argument both fire, and OpenTofu rejects a repeated argument outright. `coerce` already
+guarantees a `FieldSelect` holds one of its declared options, so equality is sufficient.
+
+Two invariants in `catalog_test.go` enforce this rather than trusting it:
+
+- `TestFixedNeverCollidesWithAnEditableField` allows two writers of one argument only when their
+  gates are provably exclusive — same directive, two different values.
+- `TestCompanionsSharingASuffixAreExclusive` allows two companions to share a suffix on the same
+  terms, and additionally requires they be the same `TofuType`. The AMI presets share the suffix
+  `ami` on purpose, so switching operating system edits `data.aws_ami.<asset>_ami` rather than
+  moving it to a new address.
+
+`Companion.Data` emits the companion as a `data` block rather than a `resource` — something looked
+up at plan time instead of created.
+
+**Select option strings are stored session values.** A select's option is both its label and the
+value written into `Asset.Params`, so renaming one orphans every chart that chose it — the same
+permanence `ResourceType.Code` carries. Settle the wording before release.
+
+## Account settings
+
+A `Provider` carries `AccountParams` alongside its `Types`: the settings that belong to a whole
+account rather than to one resource. They are ordinary `ParamField`s, so the drawer renders them
+through the same `paramField` component an asset's params use, and adding one needs no new markup.
+
+```go
+AccountParams: AccountSettings([]string{"eu-west-2", "us-east-1", ...}, "eu-west-2"),
+```
+
+`AccountSettings` supplies the region plus the two default key fields. All three are `Directive`:
+none is an argument on any resource. Passing `nil` regions omits the region field, for a provider
+with no account-wide region to set — no provider currently does, because DigitalOcean's account
+region is what its VPC is created in even though the provider block takes none.
+
+Read a region with `Provider.Region(acc.Params)`, which falls back to the field's default. Never
+read `params["region"]` directly: the generator always needs a value, because a provider block with
+an empty region will not plan.
 
 ## Adding a resource type
 
@@ -166,6 +246,22 @@ Rules to follow:
   test enforces this.
 - **`Fixed` is for structural arguments only**, never security. A security setting is an ordinary
   editable field whose `Default` is the secure value.
+- **Use `FieldScript` for anything multi-line**, and only for that. It is the one field type
+  permitted to contain newlines, renders as a textarea, and has a 16KB cap rather than the 200-char
+  one names get. A startup script in a `FieldText` would be silently truncated at the first newline
+  by `Normalise`.
+- **Use `Wrap` when the provider wants the value transformed.** `"base64encode(%s)"` on Azure's
+  `custom_data`, which takes base64 where the other clouds take a plain string. The alternative —
+  special-casing it in the emitter — is the per-type branch the catalog exists to avoid.
+- **Attach `SSHKeyParams` to every machine type, and `AnsibleToggles` only where Ansible applies.**
+  They are separate because SSH access and Ansible management are separate wants. Bundling them
+  once made it impossible to give a host a key without also declaring it Ansible-managed.
+- **Use `Companion.Count` when the decision depends on a value only Terraform can see.** An SSH key
+  may arrive as a variable, so whether to create a key pair is a plan-time question. Reference a
+  counted companion with `one(...)`, which yields null at count zero.
+- **Use `RequiresParam` for anything that only applies when a directive is on.** Both `Fixed` and
+  `Companion` carry it. SSH key wiring uses it: a key pair on a host nobody manages with Ansible is
+  meaningless. An empty `RequiresParam` always applies.
 - **Mark a field `Advanced: true`** when it is not one of the three or four things someone picks
   when creating the asset. Everything else lands behind the drawer's disclosure.
 - **Use `Companions` rather than special-casing the emitter.** `internal/tofu` must contain no

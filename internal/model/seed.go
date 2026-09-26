@@ -54,7 +54,8 @@ func Seed() Session {
 }
 
 func account(id, name, provider string, x, y float64) Account {
-	return Account{ID: id, Name: name, Provider: provider, X: x, Y: y}
+	return Account{ID: id, Name: name, Provider: provider, X: x, Y: y,
+		Params: catalog.AccountDefaults(provider)}
 }
 
 // asset appends a new asset to an account and returns a reference to it, so the

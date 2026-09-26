@@ -16,11 +16,17 @@ func init() {
 		// azurerm takes no region — location is per resource — but the empty
 		// features block is mandatory.
 		Config: []Fixed{{Block: "features"}},
+		AccountParams: AccountSettings([]string{
+			"uksouth", "ukwest", "westeurope", "northeurope", "eastus", "westus2", "southeastasia",
+		}, "uksouth"),
 		Types: []ResourceType{
 			{
 				Code: "VM", Name: "Virtual machine", TofuType: "azurerm_linux_virtual_machine",
 				Network: NetFirewalled, AddressAttr: "public_ip_address", AddressKind: AddrEphemeralIP,
 				StaticAddr: &StaticAddress{TofuType: "azurerm_public_ip", Attr: "ip_address"},
+				// The interface below only gets a public address when the static
+				// toggle is on, so public_ip_address is empty until then.
+				AddressRequires: ParamStaticPublicIP,
 				Fixed: []Fixed{
 					{Key: "name", Expr: `"{{asset-dashed}}"`},
 					{Key: "resource_group_name", Expr: "azurerm_resource_group.{{account}}.name"},
@@ -30,7 +36,7 @@ func init() {
 					// trap, not a choice.
 					{Key: "admin_username", Expr: `"azureuser"`},
 					{Block: "admin_ssh_key", Key: "username", Expr: `"azureuser"`},
-					{Block: "admin_ssh_key", Key: "public_key", Expr: "var.{{account}}_ssh_public_key"},
+					{Block: "admin_ssh_key", Key: "public_key", Expr: "{{sshkey}}"},
 				},
 				Companions: []Companion{{
 					TofuType: "azurerm_network_interface", Suffix: "nic",
@@ -41,26 +47,28 @@ func init() {
 						{Block: "ip_configuration", Key: "name", Expr: `"internal"`},
 						{Block: "ip_configuration", Key: "subnet_id", Expr: "azurerm_subnet.{{account}}.id"},
 						{Block: "ip_configuration", Key: "private_ip_address_allocation", Expr: `"Dynamic"`},
+						// Attaching the address is what makes it reachable. Emitting the
+						// public IP without this left it allocated and unused.
+						{Block: "ip_configuration", Key: "public_ip_address_id",
+							Expr: "azurerm_public_ip.{{asset}}.id", RequiresParam: ParamStaticPublicIP},
 					},
 					ParentRef:  "network_interface_ids",
 					ParentExpr: "[azurerm_network_interface.{{asset}}_nic.id]",
 				}},
-				Variables: []Variable{{
-					Name: "{{account}}_ssh_public_key", Description: "SSH public key for Linux virtual machines",
-					Sensitive: true,
-				}},
-				Params: []ParamField{
+				Params: append([]ParamField{
 					StaticAddressToggle(),
 					{Key: "size", Label: "VM size", Type: FieldSelect, Options: []string{"Standard_B1s", "Standard_B2s", "Standard_D2s_v5", "Standard_E4s_v5"}, Default: "Standard_B2s"},
 					// Password auth off by default: key auth is the Azure recommendation.
 					{Key: "disable_password_authentication", Label: "SSH key auth only", Type: FieldBoolean, Default: true, Advanced: true},
+					// Azure takes base64 here where every other cloud takes a plain string.
+					{Key: "custom_data", Label: "Startup script", Type: FieldScript, Default: "", Advanced: true, Wrap: "base64encode(%s)"},
 					{Key: "caching", Block: "os_disk", Label: "OS disk caching", Type: FieldSelect, Options: []string{"ReadWrite", "ReadOnly", "None"}, Default: "ReadWrite", Advanced: true},
 					{Key: "storage_account_type", Block: "os_disk", Label: "OS disk type", Type: FieldSelect, Options: []string{"Standard_LRS", "StandardSSD_LRS", "Premium_LRS"}, Default: "StandardSSD_LRS", Advanced: true},
 					{Key: "publisher", Block: "source_image_reference", Label: "Image publisher", Type: FieldText, Default: "Canonical", Advanced: true},
 					{Key: "offer", Block: "source_image_reference", Label: "Image offer", Type: FieldText, Default: "ubuntu-24_04-lts", Advanced: true},
 					{Key: "sku", Block: "source_image_reference", Label: "Image SKU", Type: FieldText, Default: "server", Advanced: true},
 					{Key: "version", Block: "source_image_reference", Label: "Image version", Type: FieldText, Default: "latest", Advanced: true},
-				},
+				}, sshAndAnsible("azureuser")...),
 			},
 			{
 				Code: "FN", Name: "Function app", TofuType: "azurerm_linux_function_app",

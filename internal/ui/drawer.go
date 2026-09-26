@@ -137,8 +137,15 @@ func noteText(o tofu.Outcome) string {
 // splitParams divides a type's fields into those shown immediately and those
 // behind the disclosure. Directives stay with the essential set: they change what
 // gets generated, so hiding them would bury a real decision.
-func splitParams(fields []catalog.ParamField) (essential, advanced []catalog.ParamField) {
+//
+// params is the asset's own values, needed because a field gated by RequiresParam
+// is not shown at all when its gate is off. Rendering one would invite a value
+// that generation then drops, which is worse than not offering it.
+func splitParams(fields []catalog.ParamField, params map[string]any) (essential, advanced []catalog.ParamField) {
 	for _, f := range fields {
+		if !gateOpen(f, params) {
+			continue
+		}
 		if f.Advanced && !f.Directive {
 			advanced = append(advanced, f)
 			continue
@@ -146,4 +153,18 @@ func splitParams(fields []catalog.ParamField) (essential, advanced []catalog.Par
 		essential = append(essential, f)
 	}
 	return essential, advanced
+}
+
+// gateOpen mirrors required() in internal/tofu: with a value the directive must
+// equal it, without one it must be on. The two have to agree, or the drawer would
+// show a field generation ignores, or hide one it honours.
+func gateOpen(f catalog.ParamField, params map[string]any) bool {
+	if f.RequiresParam == "" {
+		return true
+	}
+	if f.RequiresValue != "" {
+		got, _ := params[f.RequiresParam].(string)
+		return got == f.RequiresValue
+	}
+	return truthy(params[f.RequiresParam])
 }

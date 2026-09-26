@@ -248,30 +248,38 @@ func classifyRule(from, to Endpoint, rule model.Rule) Outcome {
 // sourceAddress resolves a cross-account peer to something usable as a rule
 // source, or refuses with the reason and the fix.
 func sourceAddress(from Endpoint) Outcome {
-	out := Outcome{}
-	switch from.Type.AddressKind {
-	case catalog.AddrStaticIP:
-		out.Strategy = StratCIDR
-		out.Source = fmt.Sprintf("${%s.%s.%s}/32", from.Type.TofuType, resourceName(from.Asset.ID), from.Type.AddressAttr)
-	case catalog.AddrEphemeralIP:
-		if staticEnabled(from.Asset) && from.Type.StaticAddr != nil {
-			out.Strategy = StratCIDR
-			out.Source = fmt.Sprintf("${%s.%s.%s}/32", from.Type.StaticAddr.TofuType, resourceName(from.Asset.ID), from.Type.StaticAddr.Attr)
-			return out
-		}
-		out.Strategy = StratRefused
-		out.Reason = fmt.Sprintf("%s.%s changes when the instance restarts, so the rule would break "+
-			"silently — enable \"Static public IP\" on %s", from.Type.TofuType, from.Type.AddressAttr, from.Label)
-	case catalog.AddrHostname:
-		out.Strategy = StratRefused
-		out.Reason = fmt.Sprintf("%s exposes only a hostname (%s.%s) and firewall rules need an address — "+
-			"put an explicit CIDR in the rule's note to override", from.Label, from.Type.TofuType, from.Type.AddressAttr)
-	default:
-		out.Strategy = StratRefused
-		out.Reason = fmt.Sprintf("%s exposes no address to use as a rule source — "+
-			"put an explicit CIDR in the rule's note to override", from.Label)
+	expr, reason := addressExpr(from.Type, from.Asset)
+	if reason != "" {
+		return Outcome{Strategy: StratRefused, Reason: from.Label + " " + reason}
 	}
-	return out
+	return Outcome{Strategy: StratCIDR, Source: expr + "/32"}
+}
+
+// addressExpr resolves an asset to the HCL expression naming its address, or
+// explains why it has none.
+//
+// This is the single definition of "can this host be named by address". Firewall
+// rules and the Ansible inventory both need it, and a second copy would drift —
+// they are asking the same question.
+func addressExpr(rt catalog.ResourceType, a *model.Asset) (expr, reason string) {
+	switch rt.AddressKind {
+	case catalog.AddrStaticIP:
+		return fmt.Sprintf("${%s.%s.%s}", rt.TofuType, resourceName(a.ID), rt.AddressAttr), ""
+
+	case catalog.AddrEphemeralIP:
+		if staticEnabled(a) && rt.StaticAddr != nil {
+			return fmt.Sprintf("${%s.%s.%s}", rt.StaticAddr.TofuType, resourceName(a.ID), rt.StaticAddr.Attr), ""
+		}
+		return "", fmt.Sprintf("has an address (%s.%s) that changes when the instance restarts, so it "+
+			"would break silently — enable \"Static public IP\" on it", rt.TofuType, rt.AddressAttr)
+
+	case catalog.AddrHostname:
+		return "", fmt.Sprintf("exposes only a hostname (%s.%s) and an address is needed — "+
+			"put an explicit CIDR in the rule's note to override", rt.TofuType, rt.AddressAttr)
+
+	default:
+		return "", "exposes no address to use — put an explicit CIDR in the rule's note to override"
+	}
 }
 
 // peerLiteral is the literal address for a node that is not a managed resource.
