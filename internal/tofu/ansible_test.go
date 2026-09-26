@@ -10,7 +10,7 @@ import (
 
 // ansibleSeed enables Ansible on the web tier, which the seed chart already gives
 // SSH ingress from the jump host and a static-address toggle.
-func ansibleSeed(t *testing.T, tweak func(*model.Asset)) (model.Session, string, []string) {
+func ansibleSeed(t *testing.T, tweak func(*model.Asset)) (model.Session, string, []Warning) {
 	t.Helper()
 	s := model.Seed()
 	a := &s.Accounts[0].Assets[2] // Web tier EC2
@@ -27,7 +27,15 @@ func ansibleSeed(t *testing.T, tweak func(*model.Asset)) (model.Session, string,
 	return s, hcl, warnings
 }
 
-func joined(w []string) string { return strings.Join(w, "\n") }
+// joined flattens the warning texts for a substring assertion. Tests care what
+// the user is told; where the IDs matter they are asserted on their own.
+func joined(ws []Warning) string {
+	out := make([]string, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, w.Text)
+	}
+	return strings.Join(out, "\n")
+}
 
 // Four sources, first non-empty wins. Only the ones actually set appear, so a host
 // with no per-resource key resolves through the two variables alone.

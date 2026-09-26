@@ -271,6 +271,26 @@ Rules to follow:
   no firewall at all and are named by `attachmentGaps()` instead. The previous behaviour emitted an
   attachment referencing a resource that was never declared, which failed `tofu validate` — and
   before that, read as protection that was not there.
+- **Set `Origin` only on a type a CDN can genuinely fetch from.** It says two things: the HCL
+  expression naming the hostname the edge fetches from, and the directive that must be on before
+  that expression resolves to anything. `aws_instance` needs `static_public_ip`, because the name
+  it publishes moves with its address; `aws_lb` needs nothing.
+
+  Leave `Expr` empty where the cloud's edge does not fetch by name at all — a Google backend
+  service reaches an instance through an instance group, so `origin_gcp.go` builds the backend
+  from the type's own `TofuType` and there is no hostname to declare.
+
+  **Nil means nothing can front it**, and that is a real answer, the same one an empty
+  `FirewallRef` gives. A managed database answers no HTTP request, and an edge pointed at one is
+  refused and reported rather than wired to a placeholder domain. Per-cloud wiring belongs in
+  `internal/tofu/origin_<provider>.go`, never here.
+- **Use `{{param:key}}` when a companion's argument is the user's to set.** The placeholder
+  expands to the asset's value for that key, rendered through the same function an ordinary
+  argument goes through, so a typed value is quoted and escaped rather than pasted in. A load
+  balancer's listening port is the case it exists for: the argument is `port_range` on the
+  forwarding rule emitted beside the node, and an ordinary `ParamField` would have put it on the
+  backend service, where no such argument exists. Pair it with `Directive: true`, for the same
+  reason.
 - **Mark a param `Directive: true` when it is not an HCL argument.** `static_public_ip` is the
   current example: `aws_instance` has no argument by that name, so emitting it verbatim would
   produce invalid configuration. Directives still render in the drawer and still live in

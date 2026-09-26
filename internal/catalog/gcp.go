@@ -52,6 +52,10 @@ func init() {
 				// No access_config means no public address at all, and the attribute
 				// above would index a block that does not exist.
 				AddressRequires: ParamStaticPublicIP,
+				// No Expr: a Google load balancer reaches an instance through an
+				// instance group, not by name, so the backend is built from this
+				// type's own resource address. See internal/tofu/origin_gcp.go.
+				Origin: &Origin{},
 				Fixed: []Fixed{
 					{Block: "network_interface", Key: "subnetwork", Expr: "google_compute_subnetwork.{{account}}.id"},
 					// access_config is what gives the instance a public address, and
@@ -190,6 +194,59 @@ func init() {
 				Params: []ParamField{
 					{Key: "enable_cdn", Label: "Enable CDN", Type: FieldBoolean, Default: true},
 					{Key: "cache_mode", Block: "cdn_policy", Label: "Cache mode", Type: FieldSelect, Options: []string{"CACHE_ALL_STATIC", "USE_ORIGIN_HEADERS", "FORCE_CACHE_ALL"}, Default: "CACHE_ALL_STATIC", Advanced: true},
+				},
+			},
+			{
+				// Cloud CDN is a setting on a backend service, never a resource of its
+				// own, so fronting anything but a bucket means a load balancer. The
+				// backend, its named port and its health check are not here: they
+				// depend on what is drawn behind this, and are built by
+				// internal/tofu/origin_gcp.go.
+				Code: "GLB", Name: "HTTPS load balancer", TofuType: "google_compute_backend_service",
+				// An edge by the same reasoning as a CDN: publicly reachable by
+				// construction, and it reaches its backends from Google's health-check
+				// and load-balancer ranges rather than from an address of its own.
+				Network: NetEdge,
+				Fixed: []Fixed{
+					{Key: "load_balancing_scheme", Expr: `"EXTERNAL_MANAGED"`},
+					{Key: "protocol", Expr: `"HTTP"`},
+				},
+				Companions: []Companion{{
+					TofuType: "google_compute_url_map", Suffix: "map",
+					Fixed: []Fixed{
+						{Key: "name", Expr: `"{{asset-dashed}}-map"`},
+						{Key: "default_service", Expr: "google_compute_backend_service.{{asset}}.id"},
+					},
+				}, {
+					// ponytail: HTTP only. target_https_proxy needs a
+					// google_compute_managed_ssl_certificate, which needs a domain the
+					// chart cannot know, and a certificate that never provisions blocks
+					// the apply. Add both together when a domain becomes a chart value.
+					TofuType: "google_compute_target_http_proxy", Suffix: "proxy",
+					Fixed: []Fixed{
+						{Key: "name", Expr: `"{{asset-dashed}}-proxy"`},
+						{Key: "url_map", Expr: "google_compute_url_map.{{asset}}_map.id"},
+					},
+				}, {
+					TofuType: "google_compute_global_address", Suffix: "ip",
+					Fixed: []Fixed{{Key: "name", Expr: `"{{asset-dashed}}-ip"`}},
+				}, {
+					TofuType: "google_compute_global_forwarding_rule", Suffix: "fr",
+					Fixed: []Fixed{
+						{Key: "name", Expr: `"{{asset-dashed}}-fr"`},
+						{Key: "target", Expr: "google_compute_target_http_proxy.{{asset}}_proxy.id"},
+						{Key: "ip_address", Expr: "google_compute_global_address.{{asset}}_ip.address"},
+						// The port this listens on is the user's, and it is a different
+						// question from the port drawn on the line to the backend.
+						{Key: "port_range", Expr: "{{param:" + ParamFrontendPort + "}}"},
+						{Key: "load_balancing_scheme", Expr: `"EXTERNAL_MANAGED"`},
+					},
+				}},
+				Params: []ParamField{
+					{Key: "enable_cdn", Label: "Enable CDN", Type: FieldBoolean, Default: true},
+					// A directive: the argument belongs to the forwarding rule above.
+					{Key: ParamFrontendPort, Label: "Listening port", Type: FieldText, Default: "80", Directive: true},
+					{Key: "timeout_sec", Label: "Backend timeout (s)", Type: FieldNumber, Default: 30, Advanced: true},
 				},
 			},
 		},

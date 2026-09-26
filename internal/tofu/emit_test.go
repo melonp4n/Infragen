@@ -14,7 +14,7 @@ import (
 
 var update = flag.Bool("update", false, "rewrite the golden files")
 
-func generate(t *testing.T, s model.Session) (string, []string) {
+func generate(t *testing.T, s model.Session) (string, []Warning) {
 	t.Helper()
 	if err := model.Validate(&s); err != nil {
 		t.Fatalf("session invalid: %v", err)

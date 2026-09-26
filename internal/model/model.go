@@ -152,7 +152,11 @@ func (s *Session) Label(n NodeRef) string {
 		if as == nil {
 			return acc.Name + " / (removed)"
 		}
-		return acc.Name + " → " + as.Name
+		// " / " and not " → ": an arrow in this tool means the direction traffic
+		// runs, and a label that also used one made a rule heading read
+		// "Prod → LB → Prod → VM" — three identical glyphs, two different meanings,
+		// in the one place where knowing the direction is the whole job.
+		return acc.Name + " / " + as.Name
 	}
 }
 

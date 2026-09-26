@@ -229,45 +229,46 @@ func hasSSHIngress(r Report, assetID string) bool {
 
 // ansibleWarnings reports what stops an Ansible host from working. They join the
 // existing warnings, so they reach the modal and the generated file unchanged.
-func ansibleWarnings(s model.Session, r Report) []string {
-	var out []string
+func ansibleWarnings(s model.Session, r Report) []Warning {
+	var out []Warning
 	for _, acc := range s.Accounts {
 		for i := range acc.Assets {
 			a := &acc.Assets[i]
 			if !ansibleOn(a) {
 				continue
 			}
-			label := acc.Name + " → " + a.Name
+			label := acc.Name + " / " + a.Name
+			w := about(acc, *a)
 
 			if !hasSSHIngress(r, a.ID) {
-				out = append(out, fmt.Sprintf(
+				out = append(out, errorAbout(w,
 					"%s is managed with Ansible but nothing may reach it on port %d — "+
 						"add a connection allowing SSH from your jump host or the internet", label, sshPort))
 			}
 			if _, ok := group(a); !ok {
 				if raw := param(a, catalog.ParamAnsibleGroup); raw != "" {
-					out = append(out, fmt.Sprintf(
+					out = append(out, errorAbout(w,
 						"%s has an Ansible group of %q, which is not a valid inventory section name — "+
 							"letters, digits, dot, dash and underscore only. It will land in [%s]", label, raw, ungrouped))
 				} else {
-					out = append(out, fmt.Sprintf(
+					out = append(out, adviceAbout(w,
 						"%s is managed with Ansible but has no group, so it lands in [%s]", label, ungrouped))
 				}
 			}
 			if param(a, catalog.ParamSSHPublicKey) != "" && param(a, catalog.ParamSSHPublicKeyFile) != "" {
-				out = append(out, fmt.Sprintf(
+				out = append(out, adviceAbout(w,
 					"%s has both a pasted SSH key and a key file — the pasted one wins. "+
 						"Clear one of them to say which you meant", label))
 			}
 			expr, err := hostAddress(acc, a)
 			switch {
 			case err != nil && privateAddress(acc, a) != "":
-				out = append(out, fmt.Sprintf("%s is managed with Ansible but %s. The inventory names its "+
+				out = append(out, adviceAbout(w, "%s is managed with Ansible but %s. The inventory names its "+
 					"private address instead, which only works with Ansible running inside the network", label, err))
 			case err != nil:
-				out = append(out, fmt.Sprintf("%s is managed with Ansible but %s", label, err))
+				out = append(out, errorAbout(w, "%s is managed with Ansible but %s", label, err))
 			case expr == "":
-				out = append(out, fmt.Sprintf("%s is managed with Ansible but has no address to put in the inventory", label))
+				out = append(out, errorAbout(w, "%s is managed with Ansible but has no address to put in the inventory", label))
 			}
 		}
 	}

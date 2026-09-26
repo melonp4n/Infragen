@@ -286,8 +286,14 @@ resource "aws_cloudfront_distribution" "asset_aws_cdn" {
     cached_methods         = ["GET", "HEAD"]
   }
   origin {
-    domain_name = var.asset_aws_cdn_origin_domain
     origin_id   = "asset-aws-cdn-origin"
+    domain_name = var.asset_aws_cdn_origin_domain
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
   }
   restrictions {
     geo_restriction {
@@ -867,6 +873,46 @@ resource "google_storage_bucket" "asset_gcp_cdn_bucket" {
   force_destroy               = true
 }
 
+# GCP → HTTPS load balancer
+resource "google_compute_backend_service" "asset_gcp_glb" {
+  provider              = google.acc_gcp
+  name                  = "asset-gcp-glb"
+  enable_cdn            = true
+  timeout_sec           = 30
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  protocol              = "HTTP"
+}
+
+# HTTPS load balancer requires this
+resource "google_compute_url_map" "asset_gcp_glb_map" {
+  provider        = google.acc_gcp
+  name            = "asset-gcp-glb-map"
+  default_service = google_compute_backend_service.asset_gcp_glb.id
+}
+
+# HTTPS load balancer requires this
+resource "google_compute_target_http_proxy" "asset_gcp_glb_proxy" {
+  provider = google.acc_gcp
+  name     = "asset-gcp-glb-proxy"
+  url_map  = google_compute_url_map.asset_gcp_glb_map.id
+}
+
+# HTTPS load balancer requires this
+resource "google_compute_global_address" "asset_gcp_glb_ip" {
+  provider = google.acc_gcp
+  name     = "asset-gcp-glb-ip"
+}
+
+# HTTPS load balancer requires this
+resource "google_compute_global_forwarding_rule" "asset_gcp_glb_fr" {
+  provider              = google.acc_gcp
+  name                  = "asset-gcp-glb-fr"
+  target                = google_compute_target_http_proxy.asset_gcp_glb_proxy.id
+  ip_address            = google_compute_global_address.asset_gcp_glb_ip.address
+  port_range            = "80"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+}
+
 # Values the chart cannot supply. Sensitive ones have no default, so
 # `tofu plan` prompts for them rather than storing a secret here.
 
@@ -913,7 +959,7 @@ variable "asset_aws_ecs_image" {
 }
 
 variable "asset_aws_cdn_origin_domain" {
-  description = "Origin the distribution fetches from"
+  description = "Origin the distribution fetches from. Draw a line to an asset to wire this instead."
   type        = string
   default     = "origin.example.com"
 }

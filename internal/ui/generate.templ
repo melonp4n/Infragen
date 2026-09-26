@@ -1,0 +1,83 @@
+package ui
+
+import (
+  "strconv"
+
+  "infrachart/internal/tofu"
+)
+
+// GenerateResult is the body of the generate modal: what needs attention, then
+// the configuration.
+//
+// Warnings used to be `#` comments at the top of the same <pre> as the HCL, in
+// the same font and the same colour, which made them read as generated Terraform
+// rather than as something to act on — a load balancer with no backends was
+// reported and applied anyway. They are their own panel now, and the code block
+// holds only code, so what gets copied is a file and not a report.
+//
+// Rendering HCL through templ here is not the thing CLAUDE.md forbids. That rule
+// is against *building* HCL with templ, where escaping turns a quote into &quot;.
+// Showing already-generated HCL as text inside a <pre> is what escaping is for.
+templ GenerateResult(hcl string, warnings []tofu.Warning) {
+  if len(warnings) > 0 {
+    <div class="gen-warnings">
+      <div class="gen-warnings-head">{ attentionLine(warnings) }</div>
+      for _, w := range sortWarnings(warnings) {
+        <div
+          class={ "gen-warning", "gw-" + w.Severity }
+          data-warning-account={ w.AccountID }
+          data-warning-asset={ w.AssetID }
+          data-warning-conn={ w.ConnID }
+          if w.AssetID != "" || w.ConnID != "" {
+            title="Click to select this on the chart"
+          }
+        >{ w.Text }</div>
+      }
+    </div>
+  }
+  <pre id="generate-output">{ hcl }</pre>
+}
+
+// attentionLine counts the two severities separately. "3 things need your
+// attention" over two errors and one note reads as three problems.
+func attentionLine(ws []tofu.Warning) string {
+  errs := 0
+  for _, w := range ws {
+    if w.Severity == tofu.SevError {
+      errs++
+    }
+  }
+  switch {
+  case errs == 0:
+    return plural(len(ws), "note", "notes")
+  case errs == len(ws):
+    return plural(errs, "problem", "problems") + " — this chart will not do what it says"
+  default:
+    return plural(errs, "problem", "problems") + " — this chart will not do what it says, and " +
+      plural(len(ws)-errs, "note", "notes")
+  }
+}
+
+func plural(n int, one, many string) string {
+  if n == 1 {
+    return "1 " + one
+  }
+  return strconv.Itoa(n) + " " + many
+}
+
+// sortWarnings puts errors first. A problem below three notes about project IDs
+// is a problem nobody reads.
+func sortWarnings(ws []tofu.Warning) []tofu.Warning {
+  out := make([]tofu.Warning, 0, len(ws))
+  for _, w := range ws {
+    if w.Severity == tofu.SevError {
+      out = append(out, w)
+    }
+  }
+  for _, w := range ws {
+    if w.Severity != tofu.SevError {
+      out = append(out, w)
+    }
+  }
+  return out
+}

@@ -14,8 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -58,6 +56,7 @@ func main() {
 	mux.HandleFunc("POST /api/render/drawer", renderDrawer)
 	mux.HandleFunc("POST /api/generate", generate)
 	mux.HandleFunc("POST /api/validate", validate)
+	mux.HandleFunc("POST /api/warnings", warningsHandler)
 
 	log.Printf("infrachart listening on http://%s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, mux))
@@ -181,9 +180,9 @@ func renderDrawer(w http.ResponseWriter, r *http.Request) {
 	render(w, r, ui.Drawer(req.Session, req.Selection))
 }
 
-// generate renders the chart as OpenTofu, with any warnings above the output.
-// Warnings go into the response rather than being dropped: a refusal the user
-// never sees is as bad as a silently broken rule.
+// generate renders the chart as OpenTofu, alongside anything that needs the
+// user's attention. Warnings go into the response rather than being dropped: a
+// refusal the user never sees is as bad as a silently broken rule.
 func generate(w http.ResponseWriter, r *http.Request) {
 	var s model.Session
 	if !decode(w, r, &s) {
@@ -198,20 +197,30 @@ func generate(w http.ResponseWriter, r *http.Request) {
 	model.Normalise(&s)
 
 	hcl, warnings := tofu.Generate(s)
-	var body strings.Builder
-	if len(warnings) > 0 {
-		fmt.Fprintf(&body, "# %d thing(s) need your attention\n#\n", len(warnings))
-		for _, line := range warnings {
-			fmt.Fprintf(&body, "#   ! %s\n", line)
-		}
-		body.WriteString("\n")
-	}
-	body.WriteString(hcl)
+	// A fragment rather than text, so the warnings can be a panel instead of
+	// comments the eye reads as generated Terraform. The code block holds only
+	// code, which is also what the copy button now takes.
+	render(w, r, ui.GenerateResult(hcl, warnings))
+}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	if _, err := io.WriteString(w, body.String()); err != nil {
-		log.Printf("generate: %v", err)
+// warnings answers "what is wrong with this chart" without generating anything.
+//
+// The canvas polls it so a node that will not do what it says is marked before
+// the user opens a drawer or presses Generate. That is the whole point: the
+// reports this returns already existed and were only ever visible at the top of a
+// file nobody reads until after they have applied it.
+func warningsHandler(w http.ResponseWriter, r *http.Request) {
+	var s model.Session
+	if !decode(w, r, &s) {
+		return
 	}
+	if err := model.Validate(&s); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	model.Normalise(&s)
+	_, ws := tofu.Generate(s)
+	writeJSON(w, ws)
 }
 
 // validate runs the real tool over the generated configuration and reports what

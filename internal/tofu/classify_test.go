@@ -284,8 +284,8 @@ func TestWarningsAreActionableOnly(t *testing.T) {
 	if len(w) != 1 {
 		t.Fatalf("got %d warnings, want 1: %v", len(w), w)
 	}
-	if !strings.Contains(w[0], "no rule generated") || !strings.Contains(w[0], "Static public IP") {
-		t.Errorf("warning does not state the problem and the fix: %q", w[0])
+	if !strings.Contains(w[0].Text, "no rule generated") || !strings.Contains(w[0].Text, "Static public IP") {
+		t.Errorf("warning does not state the problem and the fix: %q", w[0].Text)
 	}
 }
 
@@ -309,7 +309,7 @@ func TestUnsetPortIsRefused(t *testing.T) {
 	}
 	// A refusal the user never sees is the same failure as a silently open rule.
 	warnings := r.Warnings()
-	if len(warnings) == 0 || !strings.Contains(strings.Join(warnings, "\n"), "no port set") {
+	if len(warnings) == 0 || !strings.Contains(joined(warnings), "no port set") {
 		t.Errorf("unset port did not reach the warnings: %v", warnings)
 	}
 }

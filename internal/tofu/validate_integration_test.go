@@ -56,6 +56,11 @@ func TestValidateAgainstRealProviders(t *testing.T) {
 		// the private one. The private address attributes are references like any
 		// other — a wrong name is caught here and nowhere else.
 		{"ansible-private", ansiblePrivateEverywhere()},
+		// Every origin an edge can fetch from. A custom_origin_config, an origin
+		// access control, a serverless permission, an instance group and a health
+		// check are all shapes no other fixture emits, and one of the lines runs
+		// on 8080 so the drawn port is proved to reach the arguments it must.
+		{"cdn-origins", cdnOrigins()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hcl, _ := generate(t, tc.session)
@@ -186,6 +191,65 @@ func firewalledEverywhere() model.Session {
 		}
 	}
 	return s
+}
+
+// cdnOrigins draws an edge in front of every kind of origin there is.
+//
+// One distribution per origin, because only one origin per edge is generated —
+// routing between two needs cache behaviours the chart does not describe. The
+// load balancer's backend runs on 8080 while it listens on 80, which is the case
+// that would pass unnoticed if any of the three arguments the drawn port reaches
+// were hardcoded.
+func cdnOrigins() model.Session {
+	newAsset := func(provider, id, code string, overrides map[string]any) model.Asset {
+		params := catalog.Defaults(provider, code)
+		for k, v := range overrides {
+			params[k] = v
+		}
+		return model.Asset{ID: id, Code: code, Name: id, Params: params}
+	}
+
+	aws := model.Account{
+		ID: "acc_aws", Name: "AWS", Provider: "aws", Params: catalog.AccountDefaults("aws"),
+		Assets: []model.Asset{
+			newAsset("aws", "cdn_to_alb", "CDN", map[string]any{catalog.ParamOriginProtocol: "http-only"}),
+			newAsset("aws", "cdn_to_ec2", "CDN", nil),
+			newAsset("aws", "cdn_to_fn", "CDN", nil),
+			newAsset("aws", "alb", "ALB", nil),
+			// An instance is only an origin once its address stops moving.
+			newAsset("aws", "ec2", "EC2", map[string]any{catalog.ParamStaticPublicIP: true}),
+			newAsset("aws", "fn", "λ", map[string]any{catalog.ParamFunctionURL: true}),
+		},
+	}
+	gcp := model.Account{
+		ID: "acc_gcp", Name: "GCP", Provider: "gcp", Params: catalog.AccountDefaults("gcp"),
+		Assets: []model.Asset{
+			newAsset("gcp", "glb", "GLB", nil),
+			newAsset("gcp", "gce", "GCE", nil),
+		},
+	}
+
+	link := func(accID, edge, from, port string) model.Connection {
+		return model.Connection{
+			ID: "conn_" + edge,
+			A:  model.NodeRef{Type: model.NodeAsset, AccountID: accID, AssetID: edge},
+			B:  model.NodeRef{Type: model.NodeAsset, AccountID: accID, AssetID: from},
+			AToB: []model.Rule{
+				{Protocol: "TCP", Port: port, Detail: "origin fetch"},
+			},
+		}
+	}
+	return model.Session{
+		Version:  model.SchemaVersion,
+		Accounts: []model.Account{aws, gcp},
+		Connections: []model.Connection{
+			link("acc_aws", "cdn_to_alb", "alb", "8080"),
+			link("acc_aws", "cdn_to_ec2", "ec2", "443"),
+			// A function URL is HTTPS on 443 and nothing else.
+			link("acc_aws", "cdn_to_fn", "fn", "443"),
+			link("acc_gcp", "glb", "gce", "8080"),
+		},
+	}
 }
 
 // ansiblePrivateEverywhere turns Ansible on for every type that supports it and

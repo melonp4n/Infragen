@@ -18,8 +18,8 @@ func TestGCPProjectReachesTheVariable(t *testing.T) {
 		t.Errorf("the account region did not reach its variable:\n%s", hcl)
 	}
 	for _, w := range warnings {
-		if strings.Contains(w, "Project ID") {
-			t.Errorf("warned about a project that is set: %s", w)
+		if strings.Contains(w.Text, "Project ID") {
+			t.Errorf("warned about a project that is set: %s", w.Text)
 		}
 	}
 }
@@ -27,7 +27,7 @@ func TestGCPProjectReachesTheVariable(t *testing.T) {
 func TestBlankGCPProjectIsWarnedAbout(t *testing.T) {
 	_, warnings := generate(t, inboundChart("gcp", "GCE"))
 	for _, w := range warnings {
-		if strings.Contains(w, "Project ID") {
+		if strings.Contains(w.Text, "Project ID") {
 			return
 		}
 	}

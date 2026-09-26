@@ -43,9 +43,15 @@ POST /api/render/asset     mints an asset ID, returns the tile
 POST /api/render/extip     validates the address, mints an ID, returns the node
 POST /api/render/canvas    whole chart — this is how import works
 POST /api/render/drawer    edit panel for the current selection
-POST /api/generate         session in, OpenTofu out
+POST /api/generate         session in, a fragment out: the warning panel, then the code block
 POST /api/validate         session in, `init` + `validate` verdict out
+POST /api/warnings         session in, []tofu.Warning as JSON — what the canvas marks its nodes from
 ```
+
+`/api/generate` returns markup rather than text because warnings are part of the answer and needed
+to stop looking like generated Terraform. Rendering already-generated HCL through templ is fine —
+the rule against templ and HCL is about *building* configuration, where escaping would turn every
+quote into `&quot;`.
 
 ### IDs
 

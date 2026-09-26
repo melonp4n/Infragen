@@ -128,6 +128,28 @@ nothing more, which is how fifteen invented parameters survived until someone ac
   `Seed()` never connects an Azure VM or a DigitalOcean managed database, so two of the four
   firewall emitters were untouched by the acceptance gate for months. `everytype-firewalled` is the
   fixture that reaches them.
+- **A warning nobody sees is a warning that does not exist.** Warnings were `#` comments at the
+  top of the generated file, in the same font and colour as the HCL, so they read as Terraform and
+  a load balancer with no backends was applied anyway. `tofu.Warning` carries a severity and the
+  IDs of what it is about, which is what lets the canvas badge the node and the generate panel
+  select the line. Anything that reports a problem sets those IDs — one with none is invisible to
+  two of the three surfaces. The judgement stays in `internal/tofu`: the browser toggles a class
+  and never decides what counts as broken.
+- **Which direction a rule was written in is not a fact about the chart.** `a` is whichever
+  connector was clicked first, and the drawer renders both directions identically, so a rule in
+  the "wrong" one is an ordinary slip. Name it — "the rule is on X → Y, move it to Y → X" — and
+  never report the line as having no rule when it has one. A message the user can see is false
+  costs you every message after it.
+- **`→` means direction and nothing else.** `Session.Label` joins with `/` for exactly this
+  reason: when it used an arrow, a rule heading read `Prod → LB → Prod → VM`.
+- **A CDN line has two halves, and the firewall rule is only one of them.** The prefix list lets
+  the edge through; the origin configuration is what makes it send anything. CloudFront fetched
+  from `origin.example.com` while the rule was perfect. `ResourceType.Origin` says what can be an
+  origin, `internal/tofu/origin_<provider>.go` says how that cloud wires it, and nil means nothing
+  can front it — the same real answer an empty `FirewallRef` gives. The port drawn on the line is
+  the port the origin is fetched on: on GCP it has to reach the instance group's `named_port`, the
+  backend service's `port_name` and the health check at once, and a health check left on 80 fails
+  every probe while every resource in the file looks correct.
 - **A toggle that allocates something must also attach it.** Enabling a static public IP on Azure or
   GCP emitted the address resource and a comment saying to wire it up by hand, which is a setting
   that appears to work and does nothing. Attachment is a `Fixed` with `RequiresParam`, and every

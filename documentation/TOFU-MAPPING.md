@@ -70,6 +70,7 @@ Each `ResourceType` carries the OpenTofu type it becomes.
 | `CSQL` | `google_sql_database_instance` |
 | `GKE` | `google_container_cluster` |
 | `CDN` | `google_compute_backend_bucket` |
+| `GLB` | `google_compute_backend_service` |
 
 ### DigitalOcean
 | Code | Resource |
@@ -115,6 +116,7 @@ declared in the catalog as `ResourceType.Companions` and emitted automatically, 
 | `google_cloudfunctions2_function` | `google_storage_bucket`, `google_storage_bucket_object` | `build_config.source` must point at an object in a bucket |
 | `google_container_cluster` | `google_container_node_pool` with `remove_default_node_pool = true` | machine type and node count are node-pool concerns |
 | `google_compute_backend_bucket` | `google_storage_bucket` | `bucket_name` is required |
+| `google_compute_backend_service` | `google_compute_url_map`, `google_compute_target_http_proxy`, `google_compute_global_address`, `google_compute_global_forwarding_rule` | a backend service is not reachable on its own — the chain in front of it is what has an address and a port |
 
 ### DigitalOcean
 
@@ -586,6 +588,73 @@ So: **a CDN-to-origin edge is origin configuration, not a firewall rule.** Use t
 list or service tag where the provider offers one. Where it does not, emit the origin
 configuration plus a commented `variable` and an explicit warning. Never fabricate a CIDR.
 
+### Origins — what the line actually wires
+
+The prefix list above is only the permission half. A rule permits traffic; the origin
+configuration is what makes the edge send any. Until both existed, a `CDN → EC2` line generated a
+correct ingress rule on the instance and a distribution that still fetched from
+`origin.example.com`.
+
+`ResourceType.Origin` says whether a type can be an origin at all, and what has to be true first.
+Nil means nothing can front it, which is a real answer — a managed database answers no HTTP
+request, and an edge pointed at one is refused rather than wired to a placeholder.
+
+| Provider | Origin | How the edge names it | Gate |
+|---|---|---|---|
+| aws | `ALB` | `aws_lb.<id>.dns_name` | none — the name is stable |
+| aws | `EC2` | `aws_eip.<id>.public_dns` | `static_public_ip`, because `aws_instance.public_dns` moves with the instance's address |
+| aws | `λ` | `aws_lambda_function_url.<id>_url.function_url`, trimmed to a bare host | `function_url` |
+| gcp | `GCE` | not by name — a backend service reaches it through an instance group | none |
+
+The per-cloud wiring lives in `internal/tofu/origin_aws.go` and `origin_gcp.go`, behind the
+`origin` interface in `origin.go` and chosen by `newOrigin(provider)`. This is deliberately the
+same shape as `newFirewall`: a fifth cloud is a new file, not a new branch in an existing one.
+Everything true of every cloud — the type cannot be an origin, its gate is off, a second origin
+is already wired, the port is blank or a range — is settled once in `origin.go` so no provider
+restates it.
+
+**A function URL origin needs signing, not a weaker default.** `aws_lambda_function_url`
+defaults to `AWS_IAM`, so CloudFront's request is rejected unless it is signed. The generator
+emits an `aws_cloudfront_origin_access_control` with `signing_behavior = "always"` and the
+matching `aws_lambda_permission`. Making the function URL public instead would be a security
+setting whose default is the unsafe value, which is the one thing the catalog never does.
+
+**AWS: `custom_origin_config` is not optional.** CloudFront requires it for every non-S3 origin,
+and it carries `http_port` and `https_port` as required arguments. The port drawn on the line
+fills whichever one the origin protocol policy uses; the other keeps a default nothing connects
+to.
+
+**GCP: Cloud CDN is a setting, not a resource.** `enable_cdn` lives on a backend service or a
+backend bucket, so fronting anything other than a bucket means a load balancer. That is the `GLB`
+type. A `CDN → GCE` line is refused and told to use it.
+
+**GCP: the drawn port has to reach three arguments.** A backend service asks its group for a port
+*by name*, so the port becomes the instance group's `named_port`, the backend service's
+`port_name` that refers to it, and the health check's `http_health_check.port`. A health check
+left on 80 while the application serves 8080 fails every probe — the load balancer returns 502
+and every resource in the file looks correct.
+
+**Frontend and backend ports are different questions.** The load balancer's listening port is
+`frontend_port` on the node and reaches `google_compute_global_forwarding_rule.port_range`. The
+backend port is the one drawn on the line. Listening on 443 and reaching the application on 8080
+is the ordinary case, and one value cannot say both.
+
+**Instance group, not NEG.** A `google_compute_instance_group` is the backend for a VM:
+unmanaged, zonal, holding the one instance. It is a companion of the *load balancer*, not of the
+VM, because it exists only because a line was drawn — an instance with no edge in front of it must
+not grow one. A NEG is the serverless path:
+`google_compute_region_network_endpoint_group` with `type = "SERVERLESS"` is what a Cloud Run or
+Cloud Functions origin will need, with no health check and no named port. That is a second branch
+in `origin_gcp.go` when GCF comes into scope, and nothing else changes.
+
+**An origin is fetched on one port.** A blank port, `*`, or a range cannot name one, so all three
+are refused — the same fail-closed reading a firewall rule gives a blank port. Guessing 80 here
+would quietly contradict a chart that says 8080.
+
+**A refusal still has to leave configuration that plans.** `aws_cloudfront_distribution` will not
+validate without an `origin` block, so a refused origin keeps the variable-backed fallback and
+carries the reason alongside it rather than instead of it.
+
 ## Connection strategies
 
 The generator maps each `model.Connection` to one strategy:
@@ -594,7 +663,7 @@ The generator maps each `model.Connection` to one strategy:
 |---|---|
 | firewalled → firewalled, same account and VPC | security-group reference — no IP, cannot rot |
 | firewalled → firewalled, cross account or cloud | CIDR from the peer's address attribute; **refuse if not stable** |
-| edge → firewalled, same provider | native prefix list or service tag |
+| edge → firewalled, same provider | native prefix list or service tag, **and** the origin wiring below |
 | edge → firewalled, cross provider | origin config + commented variable + warning |
 | internet → edge | comment only; a CDN is public by construction |
 | anything ↔ service endpoint | IAM policy or comment; never a firewall rule |

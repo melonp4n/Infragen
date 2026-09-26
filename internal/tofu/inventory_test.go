@@ -72,7 +72,7 @@ func TestPrivateOnlyHostIsStillInTheInventory(t *testing.T) {
 
 	var said bool
 	for _, w := range warnings {
-		if strings.Contains(w, "private address instead") {
+		if strings.Contains(w.Text, "private address instead") {
 			said = true
 		}
 	}

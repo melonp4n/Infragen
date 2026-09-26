@@ -200,6 +200,15 @@ func classifyRule(from, to Endpoint, rule model.Rule) Outcome {
 			return out
 		}
 		if from.Account != nil && to.Account != nil && from.Account.Provider == to.Account.Provider {
+			// Opening the edge's ranges on a host the edge cannot actually be
+			// pointed at is the rule-without-a-route failure: it applies cleanly and
+			// serves nothing. Asking here rather than only at generation is what
+			// puts the reason on the rule row while it is being written.
+			if reason := resolveOrigin(from, to, []model.Rule{rule}, nil).reason; reason != "" {
+				out.Strategy = StratRefused
+				out.Reason = reason
+				return out
+			}
 			out.Strategy = StratEdgeNative
 			out.Source = edgeConstruct(from.Account.Provider)
 			return out
@@ -331,8 +340,8 @@ func (o Outcome) NeedsAction() bool {
 // Warnings returns only the outcomes the user must act on: rules that could not be
 // generated, and CDN edges that no firewall can express. A refusal the user never
 // sees is as bad as a silently broken rule.
-func (r Report) Warnings() []string {
-	var out []string
+func (r Report) Warnings() []Warning {
+	var out []Warning
 	for _, f := range r.Flows {
 		for _, o := range f.Outcomes {
 			if !o.NeedsAction() {
@@ -344,7 +353,13 @@ func (r Report) Warnings() []string {
 			if o.Strategy == StratEdgeForeign {
 				prefix = "not expressible as a firewall rule"
 			}
-			out = append(out, fmt.Sprintf("%s — %s: %s", prefix, label, o.Reason))
+			// Carried on the connection, so the panel can select the line the user
+			// has to edit rather than leaving them to find it by name.
+			w := Warning{ConnID: f.ConnID}
+			if f.To.Account != nil && f.To.Asset != nil {
+				w.AccountID, w.AssetID = f.To.Account.ID, f.To.Asset.ID
+			}
+			out = append(out, errorAbout(w, "%s — %s: %s", prefix, label, o.Reason))
 		}
 	}
 	return out

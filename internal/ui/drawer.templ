@@ -74,6 +74,12 @@ templ ruleSection(s model.Session, conn model.Connection, dir string, results []
       </div>
     </div>
     <div class="rule-section-sub">{ directionHint(s, from, to) }</div>
+    // An origin fetch runs one way. When the rule that names its port is missing
+    // from this direction there is no rule row to hang the reason on, so it goes
+    // here — which is the one place the user is already looking.
+    if note := tofu.OriginNote(s, conn.ID, dir); note != "" {
+      <div class="rule-note rule-note-action">{ note }</div>
+    }
     if len(rules) == 0 {
       <div class="rule-empty">No connection this way — blocked by default.</div>
     } else {

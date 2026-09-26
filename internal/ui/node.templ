@@ -111,6 +111,10 @@ templ AccountCard(acc model.Account) {
 templ AssetTile(accountID, provider string, a model.Asset) {
   <div class="asset" data-account-id={ accountID } data-asset-id={ a.ID }>
     <div class="asset-close" title="Remove asset">✕</div>
+    // Always rendered, hidden until the tile carries .has-problem. The browser
+    // toggles that class and fills the title; it never builds this markup, which
+    // is what keeps one renderer per component.
+    <div class="asset-alert" title=""></div>
     <div class="asset-badge">{ a.Code }</div>
     <div class="asset-name">{ a.Name }</div>
     <div class="connector" data-node={ "asset:" + accountID + ":" + a.ID } title="Click to start or finish a connection"></div>

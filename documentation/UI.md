@@ -125,6 +125,29 @@ Events are delegated from `document` and `#canvas`, so fragments inserted from t
 no wiring of their own. When adding new interactive markup, extend the delegated handlers
 rather than binding to the element directly.
 
+## Two meanings of an arrow, and only one of them survives
+
+`→` in this tool means the direction traffic runs. It is not a separator.
+
+`Session.Label` used to return `Account → Asset`, so a rule-section heading came out as
+`Prod → LB → Prod → VM` — four names, three identical glyphs, two different meanings, in the one
+place where knowing the direction is the entire job. A load balancer shipped with no backends
+because its rule went into the other of two identically-styled lists. The label now joins with
+`/`, matching the `(removed)` branch that always did.
+
+## Problems are shown on the chart
+
+A node whose generated configuration will not do what the chart says gets `.has-problem`, which
+reveals a red `.asset-alert` badge carrying the reason as its `title`. The browser polls
+`POST /api/warnings` (debounced) and toggles the class; it never builds the badge, and it never
+decides what counts as a problem — that judgement stays in `internal/tofu`, because a second copy
+of it in JavaScript is the drift this codebase keeps one classifier to avoid.
+
+The generate modal shows the same list as a panel above the code, errors first, each row clickable
+to select what it names. This replaced `#   ! …` comment lines inside the same `<pre>` as the HCL,
+in the same font and colour: they read as generated Terraform, so they were scrolled past and the
+broken chart was applied.
+
 ## Class contract
 
 The server renders markup and the browser finds things in it by class and data attribute.
@@ -142,6 +165,9 @@ These names are the interface between the two — changing one means changing bo
 | `.type-menu[data-type-menu]` | pre-rendered asset picker, one per provider |
 | `[data-conn-id]` | on SVG paths and chips; identifies the connection |
 | `.rule-row[data-dir][data-index]` | one rule; `data-dir` is `aToB` or `bToA` |
+| `.asset.has-problem` | this node's generated configuration will not do what the chart says |
+| `.asset-alert` | the badge that class reveals; the browser sets its `title`, never its markup |
+| `.gen-warning[data-warning-asset][data-warning-conn]` | one row of the generate panel; clicking selects what it names |
 | `[data-param]` | a parameter input in the drawer; the attribute is the catalog `ParamKey()` |
 
 ## Advanced options disclosure

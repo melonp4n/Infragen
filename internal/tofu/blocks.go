@@ -26,6 +26,13 @@ const (
 	phSSHKey = "{{sshkey}}"
 	// The login the host expects, which is a chart value rather than a variable.
 	phSSHUser = "{{sshuser}}"
+	// phParam names one of the asset's own parameters, as {{param:frontend_port}}.
+	//
+	// It exists for an argument the user must be able to set that does not sit on
+	// the asset's own resource: a load balancer's listening port is an argument on
+	// the forwarding rule emitted beside it, and a ParamField would have put it on
+	// the backend service, where no such argument exists.
+	phParam = "{{param:"
 )
 
 // exprCtx is what a catalog expression may refer to.
@@ -34,10 +41,12 @@ type exprCtx struct {
 	assetID   string
 	sshKey    string
 	sshUser   string
+	params    map[string]any
 }
 
 // expand substitutes the placeholders in a catalog expression.
 func expand(expr string, c exprCtx) string {
+	expr = expandParams(expr, c.params)
 	return strings.NewReplacer(
 		phAccountDashed, dashed(c.accountID),
 		phAssetDashed, dashed(c.assetID),
@@ -47,6 +56,32 @@ func expand(expr string, c exprCtx) string {
 		phSSHKey, c.sshKey,
 		phSSHUser, c.sshUser,
 	).Replace(expr)
+}
+
+// expandParams substitutes {{param:key}} with the asset's value for that key,
+// rendered as HCL by the same function an ordinary argument goes through — so a
+// name someone typed is quoted and escaped rather than pasted in.
+//
+// Output is never rescanned. A user is free to type "{{param:x}}" into a text
+// field, and a loop that searched the substituted text again would either expand
+// it or never terminate.
+func expandParams(expr string, params map[string]any) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(expr, phParam)
+		if i < 0 {
+			b.WriteString(expr)
+			return b.String()
+		}
+		key, rest, ok := strings.Cut(expr[i+len(phParam):], "}}")
+		if !ok {
+			b.WriteString(expr)
+			return b.String()
+		}
+		b.WriteString(expr[:i])
+		b.WriteString(value(params[key]))
+		expr = rest
+	}
 }
 
 // blockNode collects arguments by their block path so nested blocks can be

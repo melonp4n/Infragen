@@ -470,6 +470,95 @@ The attributes are ordinary Terraform references even inside a comment, because 
 HCL inside a heredoc — so `terraform validate` resolves them and a wrong name fails there. That is
 the only check that could catch one.
 
+## Done — a CDN line now wires the origin, on AWS and GCP
+
+A line from a CDN to an asset used to produce a firewall rule and nothing else. Two charts looked
+finished and served nothing:
+
+- CloudFront's origin was pinned to `var.<asset>_origin_domain`, default `"origin.example.com"`.
+  Drawing `CDN → EC2` opened the managed prefix list on the instance and still fetched from the
+  placeholder.
+- GCP's only CDN type was `google_compute_backend_bucket`, which fronts a bucket. Drawing
+  `CDN → GCE` opened Google's health-check ranges on an instance with no load balancer behind
+  them.
+
+Both are the failure this project keeps meeting: a rule permits traffic, and something else has
+to deliver it.
+
+The classification half already existed — `StratEdgeNative` and `edgeConstruct()` were correct.
+This is the resource half, in the same shape as the firewalls: `origin.go` holds the interface and
+everything true of every cloud, `origin_aws.go` and `origin_gcp.go` hold the per-cloud wiring, and
+`newOrigin(provider)` picks one.
+
+**Ports are the chart's, not the generator's.** The port drawn on the line is the port the origin
+is fetched on, and on GCP it has to reach three arguments at once — the instance group's
+`named_port`, the backend service's `port_name`, and the health check's port. The load balancer's
+own listening port is a separate field on the node, because listening on 443 and reaching the
+application on 8080 is the ordinary case.
+
+| Change | State |
+|---|---|
+| `catalog.Origin` + `ResourceType.Origin`, set on AWS `EC2`/`ALB`/`λ` and GCP `GCE` | **done** |
+| `origin.go`, `origin_aws.go`, `origin_gcp.go` — interface, dispatch, shared refusals | **done** |
+| GCP `GLB` type: backend service, URL map, proxy, global address, forwarding rule | **done** |
+| `custom_origin_config` on CloudFront — required for every non-S3 origin, and absent until now | **done** |
+| Lambda function URL: `ParamFunctionURL`, its companion, and the CloudFront access control that signs for `AWS_IAM` | **done** |
+| `{{param:key}}` expansion, so a companion argument can be the user's to set | **done** |
+| Refusals go through `classify.go`, so the drawer shows them on the rule row as it is typed | **done** |
+| `originWarnings` — nothing drawn behind an edge, a line with no rule, a plaintext 443 | **done** |
+| `origin_test.go`, and the `cdn-origins` integration fixture | **done** |
+
+The fixture is the part that matters: `custom_origin_config`, `origin_access_control_id`,
+`aws_lambda_permission.function_url_auth_type`, `google_compute_instance_group.named_port` and the
+whole load-balancer chain are arguments nothing else in the repo emits, and `terraform validate`
+against the real schemas is the only thing that proves they exist. One of its lines runs on 8080
+so the drawn port is proved to reach every argument that must carry it.
+
+Still open: Azure and DigitalOcean have no origin adapter, so an edge there behaves as before.
+Cloud Run and Cloud Functions origins need a serverless NEG rather than an instance group — a
+second branch in `origin_gcp.go`, noted in `TOFU-MAPPING.md`. The GCP proxy is
+`target_http_proxy`; HTTPS needs a managed certificate, which needs a domain the chart cannot
+know. And none of this has been applied against a real account yet — `validate` proves the
+arguments are real and nothing about whether traffic actually arrives.
+
+## Done — a broken chart is visible on the chart
+
+Reported from a real deployment: a GCP load balancer was drawn, connected to a VM, and applied. It
+was created with no backends.
+
+The generator knew, and said so, and it did not matter. Three things stacked up:
+
+- **The two rule directions are indistinguishable.** They render with the same size, weight,
+  colour and button text, and which one is "A to B" depends on which connector was clicked first.
+  The rule went in the other one.
+- **The warning was wrong.** It read "has no rule on it" — about a line the user had just put a
+  rule on. A message someone can see is false teaches them to skip the rest.
+- **The warning was invisible.** Warnings were `#   ! …` lines inside the same `<pre>` as the HCL,
+  in the same mono font and the same colour, so they read as generated Terraform comments.
+
+| Change | State |
+|---|---|
+| `tofu.Warning` — severity plus the account, asset and connection it is about | **done** |
+| All five reporters converted; `Generate` returns `[]Warning` | **done** |
+| `originPair.reverse`, so a misplaced rule can be named instead of denied | **done** |
+| `Session.Label` joins with `/`, so `→` only ever means direction | **done** |
+| `OriginNote` + the drawer note on the direction that needs the rule | **done** |
+| `.has-problem` / `.asset-alert` on the tile, fed by `POST /api/warnings` | **done** |
+| `/api/generate` returns a fragment: warning panel first, code block second | **done** |
+| Warning rows are clickable and select what they name; errors sort first | **done** |
+| `TestRuleOnTheWrongDirectionSaysSo`, `TestNoRuleEitherWaySaysWhatToAdd`, `TestEveryOriginWarningNamesItsAsset` | **done** |
+
+The message now reads: *the rule is on "Prod / web-01 → Prod / Edge LB", and an origin fetch runs
+the other way — move it to "Prod / Edge LB → Prod / web-01", or no backend is generated.* Moving
+the rule clears the badge, the note and the panel, and the output gains its
+`google_compute_instance_group` and its `backend` block.
+
+**The browser half is unverified.** The badge toggle, the debounced refresh and click-to-select
+were checked by reading the code and by driving the endpoints with `curl`; no browser was
+available in the build environment, so nothing has clicked them. `STATUS.md` has said the same
+about the interaction layer since the beginning, and this change adds to that debt rather than
+paying it off.
+
 ## Deliberately out of scope
 
 Undo/redo, canvas zoom and pan, multi-user editing, authentication, a database, server-side

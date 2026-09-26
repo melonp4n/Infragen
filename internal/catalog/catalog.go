@@ -174,6 +174,25 @@ const ParamRootBlockDevice = "root_block_device"
 // The catalog and the generator both need the key, so it is named once here.
 const ParamStaticPublicIP = "static_public_ip"
 
+// ParamFunctionURL opts a function into its own HTTPS endpoint, which is what
+// makes it something a CDN can fetch from. A function without one is reached
+// only through an invoke API, which no edge speaks.
+const ParamFunctionURL = "function_url"
+
+// ParamFunctionURLAuth chooses who may call that endpoint. It is a directive
+// because the argument belongs to the URL companion rather than the function,
+// and an editable field rather than a Fixed because it is a security setting.
+const ParamFunctionURLAuth = "function_url_auth"
+
+// ParamOriginProtocol is how an edge talks to its origin, which decides which
+// port on the origin the drawn port refers to.
+const ParamOriginProtocol = "origin_protocol_policy"
+
+// ParamFrontendPort is the port an edge listens on. Separate from the port drawn
+// on the line behind it: listening on 443 and reaching the application on 8080
+// is the ordinary case, and one value cannot say both.
+const ParamFrontendPort = "frontend_port"
+
 // The Ansible directives. All steer generation and none is an argument on any
 // resource, so all are Directive.
 const (
@@ -321,6 +340,24 @@ type StaticAddress struct {
 	Attr     string `json:"attr"`
 }
 
+// Origin says a CDN can fetch from this type. Nil means nothing can front it,
+// and that is a real answer: a managed database is not an origin. An edge
+// pointed at one is refused and reported rather than wired to a placeholder,
+// for the same reason an unattachable firewall is not emitted — configuration
+// that looks like it works and does not is worse than none.
+type Origin struct {
+	// Expr is rendered HCL naming the hostname the edge fetches from, for the
+	// providers whose edge takes a hostname. Empty where the edge references the
+	// resource itself: GCP's load balancer takes an instance group, not a name.
+	// {{asset}} expands.
+	Expr string
+	// RequiresParam gates being an origin on a directive the user must turn on
+	// first. An instance is only an origin once it has a durable address —
+	// aws_instance.public_dns moves on stop/start, so an origin naming it breaks
+	// silently later, which is why a firewall rule may not name it either.
+	RequiresParam string
+}
+
 // ResourceType is one deployable thing, e.g. an EC2 instance.
 //
 // Code is the short badge shown on the tile and the key stored in Asset.Code —
@@ -374,6 +411,10 @@ type ResourceType struct {
 	// attaches to nothing controls nothing, which is worse than no output because
 	// it looks like the tool worked.
 	FirewallRef string `json:"firewallRef,omitempty"`
+
+	// Origin says whether a CDN can fetch from this type, and what it takes to
+	// be one. Nil means nothing can front it.
+	Origin *Origin `json:"origin,omitempty"`
 
 	Params []ParamField `json:"params"`
 }

@@ -112,8 +112,14 @@ resource "aws_cloudfront_distribution" "asset_1" {
     cached_methods         = ["GET", "HEAD"]
   }
   origin {
-    domain_name = var.asset_1_origin_domain
     origin_id   = "asset-1-origin"
+    domain_name = aws_lb.asset_2.dns_name
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
   }
   restrictions {
     geo_restriction {
@@ -205,7 +211,7 @@ resource "aws_security_group" "asset_2" {
   vpc_id   = aws_vpc.acc_1.id
 }
 
-# from AWS Account 1 → Edge CDN — origin fetch
+# from AWS Account 1 / Edge CDN — origin fetch
 resource "aws_vpc_security_group_ingress_rule" "asset_2_ingress_tcp_443_443_0" {
   provider          = aws.acc_1
   security_group_id = aws_security_group.asset_2.id
@@ -215,7 +221,7 @@ resource "aws_vpc_security_group_ingress_rule" "asset_2_ingress_tcp_443_443_0" {
   prefix_list_id    = data.aws_ec2_managed_prefix_list.com_amazonaws_global_cloudfront_origin_facing.id
 }
 
-# to AWS Account 1 → Web tier EC2 — health check + traffic
+# to AWS Account 1 / Web tier EC2 — health check + traffic
 resource "aws_vpc_security_group_egress_rule" "asset_2_egress_tcp_8080_8080_1" {
   provider                     = aws.acc_1
   security_group_id            = aws_security_group.asset_2.id
@@ -231,7 +237,7 @@ resource "aws_security_group" "asset_3" {
   vpc_id   = aws_vpc.acc_1.id
 }
 
-# from AWS Account 1 → Public ALB — health check + traffic
+# from AWS Account 1 / Public ALB — health check + traffic
 resource "aws_vpc_security_group_ingress_rule" "asset_3_ingress_tcp_8080_8080_0" {
   provider                     = aws.acc_1
   security_group_id            = aws_security_group.asset_3.id
@@ -241,7 +247,7 @@ resource "aws_vpc_security_group_ingress_rule" "asset_3_ingress_tcp_8080_8080_0"
   referenced_security_group_id = aws_security_group.asset_2.id
 }
 
-# to AWS Account 1 → Orders DB — app queries
+# to AWS Account 1 / Orders DB — app queries
 resource "aws_vpc_security_group_egress_rule" "asset_3_egress_tcp_5432_5432_1" {
   provider                     = aws.acc_1
   security_group_id            = aws_security_group.asset_3.id
@@ -277,7 +283,7 @@ resource "aws_security_group" "asset_4" {
   vpc_id   = aws_vpc.acc_1.id
 }
 
-# from AWS Account 1 → Web tier EC2 — app queries
+# from AWS Account 1 / Web tier EC2 — app queries
 resource "aws_vpc_security_group_ingress_rule" "asset_4_ingress_tcp_5432_5432_0" {
   provider                     = aws.acc_1
   security_group_id            = aws_security_group.asset_4.id
@@ -595,12 +601,6 @@ variable "acc_4_ssh_public_key" {
   default     = ""
 }
 
-variable "asset_1_origin_domain" {
-  description = "Origin the distribution fetches from"
-  type        = string
-  default     = "origin.example.com"
-}
-
 variable "asset_5_package" {
   description = "Path to the deployment package zip"
   type        = string
@@ -611,6 +611,6 @@ variable "asset_5_package" {
 #   Office jumphost — 203.0.113.10/32
 
 # Declared connections that produced no firewall rule:
-#   Internet → AWS Account 1 → Edge CDN (TCP/443): a CDN is publicly reachable by construction
-#   Internet → AWS Account 1 → Edge CDN (TCP/80): a CDN is publicly reachable by construction
-#   AWS Account 2 → Image resize fn → AWS Account 2 → Uploads bucket (TCP/443): access is governed by IAM or a resource policy, not a firewall — the port is irrelevant
+#   Internet → AWS Account 1 / Edge CDN (TCP/443): a CDN is publicly reachable by construction
+#   Internet → AWS Account 1 / Edge CDN (TCP/80): a CDN is publicly reachable by construction
+#   AWS Account 2 / Image resize fn → AWS Account 2 / Uploads bucket (TCP/443): access is governed by IAM or a resource policy, not a firewall — the port is irrelevant

@@ -51,6 +51,10 @@ func init() {
 				// public_ip is empty on an instance with no public address, which is
 				// the default. Without this the inventory got a blank line.
 				AddressRequires: "associate_public_ip_address",
+				// CloudFront takes a domain name, never an address, and
+				// aws_instance.public_dns moves with the instance's public IP. The
+				// EIP's name is the only one that survives a stop/start.
+				Origin: &Origin{Expr: "aws_eip.{{asset}}.public_dns", RequiresParam: ParamStaticPublicIP},
 				Fixed: []Fixed{
 					{Key: "subnet_id", Expr: "aws_subnet.{{account}}.id"},
 					// Bare attribute names, not strings: ignore_changes takes references.
@@ -99,11 +103,32 @@ func init() {
 			{
 				Code: codeLambda, Name: "Lambda", TofuType: "aws_lambda_function",
 				Network: NetServiceEndpoint,
+				// A function is only something an edge can fetch from once it has an
+				// HTTPS endpoint of its own. The URL carries a scheme and a trailing
+				// slash; a CloudFront origin takes the bare host.
+				Origin: &Origin{
+					Expr:          `trimsuffix(trimprefix(aws_lambda_function_url.{{asset}}_url.function_url, "https://"), "/")`,
+					RequiresParam: ParamFunctionURL,
+				},
 				Fixed: []Fixed{
 					{Key: "function_name", Expr: `"{{asset-dashed}}"`},
 					{Key: "filename", Expr: "var.{{asset}}_package"},
 				},
 				Companions: []Companion{{
+					TofuType: "aws_lambda_function_url", Suffix: "url",
+					RequiresParam: ParamFunctionURL,
+					Fixed: []Fixed{
+						{Key: "function_name", Expr: "aws_lambda_function.{{asset}}.function_name"},
+						// One gated value per option, so the argument is a choice the
+						// user makes rather than a constant. AWS_IAM is the default and
+						// CloudFront signs for it — see the access control in
+						// internal/tofu/origin_aws.go.
+						{Key: "authorization_type", Expr: `"AWS_IAM"`,
+							RequiresParam: ParamFunctionURLAuth, RequiresValue: "AWS_IAM"},
+						{Key: "authorization_type", Expr: `"NONE"`,
+							RequiresParam: ParamFunctionURLAuth, RequiresValue: "NONE"},
+					},
+				}, {
 					TofuType: "aws_iam_role", Suffix: "role",
 					Fixed: []Fixed{
 						{Key: "name", Expr: `"{{asset-dashed}}-role"`},
@@ -126,6 +151,12 @@ func init() {
 				Params: []ParamField{
 					{Key: "runtime", Label: "Runtime", Type: FieldSelect, Options: []string{"nodejs20.x", "python3.12", "java21", "provided.al2023"}, Default: "nodejs20.x"},
 					{Key: "handler", Label: "Handler", Type: FieldText, Default: "index.handler"},
+					// Both steer the companion above rather than naming an argument on
+					// the function, so both are directives.
+					{Key: ParamFunctionURL, Label: "Function URL", Type: FieldBoolean, Default: false, Directive: true},
+					{Key: ParamFunctionURLAuth, Label: "Function URL auth", Type: FieldSelect,
+						Options: []string{"AWS_IAM", "NONE"}, Default: "AWS_IAM", Directive: true,
+						RequiresParam: ParamFunctionURL},
 					{Key: "memory_size", Label: "Memory (MB)", Type: FieldNumber, Default: 128, Advanced: true},
 					{Key: "timeout", Label: "Timeout (s)", Type: FieldNumber, Default: 3, Advanced: true},
 				},
@@ -210,6 +241,9 @@ func init() {
 				// An ALB has no IP. An NLB can get static IPs via subnet_mapping,
 				// which is not modelled yet.
 				Network: NetFirewalled, AddressAttr: "dns_name", AddressKind: AddrHostname,
+				// The name a load balancer publishes does not change, so it is an
+				// origin with nothing to turn on first.
+				Origin: &Origin{Expr: "aws_lb.{{asset}}.dns_name"},
 				Fixed: []Fixed{
 					// Two zones: an application load balancer requires it.
 					{Key: "subnets", Expr: "[aws_subnet.{{account}}.id, aws_subnet.{{account}}_b.id]"},
@@ -271,7 +305,10 @@ func init() {
 				Network: NetEdge, AddressAttr: "domain_name", AddressKind: AddrHostname,
 				Fixed: []Fixed{
 					{Key: "enabled", Expr: "true"},
-					{Block: "origin", Key: "domain_name", Expr: "var.{{asset}}_origin_domain"},
+					// domain_name, custom_origin_config and the access control are not
+					// here: what a distribution fetches from depends on what is drawn
+					// behind it, so internal/tofu/origin_aws.go owns the whole origin
+					// block. Two sources writing domain_name would emit it twice.
 					{Block: "origin", Key: "origin_id", Expr: `"{{asset-dashed}}-origin"`},
 					{Block: "default_cache_behavior", Key: "target_origin_id", Expr: `"{{asset-dashed}}-origin"`},
 					{Block: "default_cache_behavior", Key: "allowed_methods", Expr: `["GET", "HEAD"]`},
@@ -279,12 +316,13 @@ func init() {
 					{Block: "restrictions.geo_restriction", Key: "restriction_type", Expr: `"none"`},
 					{Block: "viewer_certificate", Key: "cloudfront_default_certificate", Expr: "true"},
 				},
-				Variables: []Variable{{
-					Name: "{{asset}}_origin_domain", Description: "Origin the distribution fetches from",
-					Default: `"origin.example.com"`,
-				}},
 				Params: []ParamField{
 					{Key: "price_class", Label: "Price class", Type: FieldSelect, Options: []string{"PriceClass_All", "PriceClass_200", "PriceClass_100"}, Default: "PriceClass_100"},
+					// Decides which of custom_origin_config's two ports the drawn port
+					// becomes. A directive: the argument sits on the origin block, which
+					// origin_aws.go builds.
+					{Key: ParamOriginProtocol, Label: "Origin protocol", Type: FieldSelect,
+						Options: []string{"https-only", "http-only", "match-viewer"}, Default: "https-only", Directive: true},
 					{Key: "viewer_protocol_policy", Block: "default_cache_behavior", Label: "Viewer protocol policy", Type: FieldSelect, Options: []string{"redirect-to-https", "https-only", "allow-all"}, Default: "redirect-to-https"},
 					{Key: "default_ttl", Block: "default_cache_behavior", Label: "Default TTL (s)", Type: FieldNumber, Default: 3600, Advanced: true},
 				},

@@ -154,7 +154,9 @@ templ generateModal() {
       </div>
       // Filled by /api/validate. Hidden until a run has something to report.
       <div class="validate-result hidden" id="validate-result"></div>
-      <div class="modal-body"><pre id="generate-output"></pre></div>
+      // Filled by /api/generate with a server-rendered fragment: the warning
+      // panel and the code block. Empty until then.
+      <div class="modal-body" id="generate-body"></div>
     </div>
   </div>
 }

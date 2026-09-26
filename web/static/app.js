@@ -173,6 +173,49 @@
       redrawQueued = false
       drawLines()
     })
+    refreshWarnings()
+  }
+
+  // Marks the nodes whose generated configuration will not do what the chart
+  // says, so the problem is on the chart rather than at the top of a file read
+  // after applying it.
+  //
+  // Debounced rather than per-frame: this is a round trip, and the answer only
+  // changes when the chart does. The server owns the judgement — a second copy of
+  // "is this wired correctly" in JavaScript is exactly the drift this codebase
+  // keeps one classifier to avoid.
+  let warningTimer = null
+
+  function refreshWarnings() {
+    clearTimeout(warningTimer)
+    warningTimer = setTimeout(async () => {
+      let warnings
+      try {
+        const res = await fetch('/api/warnings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(state),
+        })
+        if (!res.ok) return
+        warnings = await res.json()
+      } catch (err) {
+        // A half-finished chart can fail validation while it is being edited.
+        // Leaving the previous marks alone beats clearing them on a network blip.
+        return
+      }
+      const problems = new Map()
+      for (const w of warnings || []) {
+        if (w.severity !== 'error' || !w.assetId) continue
+        const existing = problems.get(w.assetId)
+        problems.set(w.assetId, existing ? existing + '\n' + w.text : w.text)
+      }
+      for (const tile of canvas.querySelectorAll('.asset')) {
+        const text = problems.get(tile.dataset.assetId)
+        tile.classList.toggle('has-problem', Boolean(text))
+        const alert = tile.querySelector('.asset-alert')
+        if (alert) alert.title = text || ''
+      }
+    }, 300)
   }
 
   function drawLines() {
@@ -997,16 +1040,30 @@
 
     document.getElementById('btn-generate').addEventListener('click', async () => {
       const modal = document.getElementById('generate-modal')
-      const output = document.getElementById('generate-output')
+      const body = document.getElementById('generate-body')
       // A verdict from a previous generation would be about different config.
       document.getElementById('validate-result').className = 'validate-result hidden'
-      output.textContent = 'Generating...'
+      body.innerHTML = '<pre id="generate-output">Generating...</pre>'
       modal.classList.remove('hidden')
       try {
-        output.textContent = await postForHTML('/api/generate', state)
+        body.innerHTML = await postForHTML('/api/generate', state)
       } catch (err) {
-        output.textContent = 'Could not generate:\n\n' + err.message
+        document.getElementById('generate-output').textContent = 'Could not generate:\n\n' + err.message
       }
+    })
+
+    // A warning names something on the chart, so clicking it goes there. Reading
+    // a list of names and hunting for the matching tile is the step that made the
+    // old warnings worth ignoring.
+    document.getElementById('generate-body').addEventListener('click', (event) => {
+      const row = event.target.closest('.gen-warning')
+      if (!row) return
+      const { warningAsset, warningAccount, warningConn } = row.dataset
+      if (warningConn) select({ kind: CONN, id: warningConn })
+      else if (warningAsset) select({ kind: ASSET, accountId: warningAccount, assetId: warningAsset })
+      else if (warningAccount) select({ kind: ACCOUNT, accountId: warningAccount })
+      else return
+      document.getElementById('generate-modal').classList.add('hidden')
     })
 
     document.getElementById('btn-copy-tf').addEventListener('click', copyGeneratedTF)

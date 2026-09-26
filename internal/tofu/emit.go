@@ -13,7 +13,7 @@ import (
 //
 // Run model.Validate and model.Normalise first. Output is deterministic: every
 // loop walks a slice in order, never a map.
-func Generate(s model.Session) (string, []string) {
+func Generate(s model.Session) (string, []Warning) {
 	report := Classify(s)
 	w := &writer{}
 
@@ -40,6 +40,7 @@ func Generate(s model.Session) (string, []string) {
 	}
 
 	guarded := guardedAssets(rules)
+	origins := originWiring(s)
 	vars := newVarSet()
 	renderKeyLocals(w, s)
 	// The key variables exist only where something references them, so a chart
@@ -68,7 +69,7 @@ func Generate(s model.Session) (string, []string) {
 		providerBlock(w, p, acc, vars)
 		scaffold(w, acc.Provider, acc.ID)
 		for _, a := range acc.Assets {
-			assetResource(w, p, acc, a, guarded[a.ID], vars)
+			assetResource(w, p, acc, a, guarded[a.ID], vars, origins[a.ID])
 		}
 		if fw := firewalls[acc.ID]; fw != nil {
 			fw.render(w, acc)
@@ -96,6 +97,7 @@ func Generate(s model.Session) (string, []string) {
 	warnings := append(report.Warnings(), ansibleWarnings(s, report)...)
 	warnings = append(warnings, unreachableWarnings(report)...)
 	warnings = append(warnings, accountSettingWarnings(s)...)
+	warnings = append(warnings, originWarnings(s, origins)...)
 	return w.String(), append(warnings, blankChoiceWarnings(s)...)
 }
 
@@ -203,7 +205,7 @@ func providerBlock(w *writer, p catalog.Provider, acc model.Account, vars *varSe
 // assetResource emits one asset, its fixed arguments and its companions. The
 // resource name is the asset ID; the display name goes into tags or labels, which
 // providers update in place, so renaming an asset never replaces infrastructure.
-func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Asset, guarded bool, vars *varSet) {
+func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Asset, guarded bool, vars *varSet, extra wiring) {
 	rt, ok := catalog.Type(acc.Provider, a.Code)
 	if !ok {
 		return
@@ -238,8 +240,15 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 		}
 		addFixed(root, fx, ctx)
 	}
+	// What is drawn behind an edge decides part of its own resource, so the
+	// arguments arrive in the same shape the catalog produces and are applied
+	// the same way. See origin.go.
+	for _, fx := range extra.fixed {
+		addFixed(root, fx, ctx)
+	}
+	companions := append(append([]catalog.Companion{}, rt.Companions...), extra.companions...)
 	// A companion the parent never references would be dead HCL.
-	for _, c := range rt.Companions {
+	for _, c := range companions {
 		if !required(c.RequiresParam, c.RequiresValue, a) {
 			continue
 		}
@@ -253,7 +262,7 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	if guarded {
 		attach(root, a, rt)
 	}
-	for _, v := range rt.Variables {
+	for _, v := range append(append([]catalog.Variable{}, rt.Variables...), extra.vars...) {
 		vars.add(varDecl{
 			Name:        expand(v.Name, ctx),
 			Description: v.Description,
@@ -266,7 +275,7 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	w.line("# %s → %s", acc.Name, a.Name)
 	w.block(fmt.Sprintf("resource %q %q", rt.TofuType, a.ID), func() { root.render(w) })
 
-	for _, c := range rt.Companions {
+	for _, c := range companions {
 		if !required(c.RequiresParam, c.RequiresValue, a) {
 			continue
 		}
@@ -316,6 +325,7 @@ func assetCtx(acc model.Account, a model.Asset) exprCtx {
 		assetID:   a.ID,
 		sshKey:    sshKeyLocal(a.ID),
 		sshUser:   loginUser(&a),
+		params:    a.Params,
 	}
 }
 

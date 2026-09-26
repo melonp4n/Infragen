@@ -117,6 +117,18 @@
   }
   .asset:hover .asset-close{display:flex;}
   .asset-close:hover{background:rgba(232,87,75,0.18);color:var(--danger);}
+  /* A node whose generated configuration will not do what the chart says. Red
+     and always visible: the whole reason this exists is that the same report as
+     a grey comment in the output went unread until after an apply. */
+  .asset.has-problem{border-color:var(--danger);box-shadow:0 0 0 1px rgba(232,87,75,0.35);}
+  .asset-alert{
+    position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
+    display:none;align-items:center;justify-content:center;
+    background:var(--danger);color:#160B0A;font-size:10px;font-weight:700;line-height:1;cursor:help;
+  }
+  .asset-alert::before{content:"!";}
+  .asset.has-problem .asset-alert{display:flex;}
+
   .connector{
     position:absolute;left:50%;bottom:-6px;transform:translateX(-50%);
     width:11px;height:11px;border-radius:50%;background:var(--panel-2);
@@ -360,6 +372,23 @@
   .validate-result.ok{background:rgba(91,217,122,0.10);color:var(--ok);border-left:3px solid var(--ok);}
   .validate-result.bad{background:rgba(232,87,75,0.10);color:var(--danger);border-left:3px solid var(--danger);}
   .toolbtn.busy{opacity:0.55;pointer-events:none;}
+
+  /* The generate modal's warning panel. Separate from the code block on purpose:
+     these used to be "#  ! ..." lines inside the same <pre>, in the same mono
+     font and the same colour, so they read as generated Terraform comments. */
+  .gen-warnings{border-bottom:1px solid var(--border-soft);}
+  .gen-warnings-head{
+    padding:9px 18px 7px;font-size:11px;font-weight:600;letter-spacing:0.04em;
+    text-transform:uppercase;color:var(--text-dim);
+  }
+  .gen-warning{
+    padding:8px 18px;font-size:12px;line-height:1.5;border-left:3px solid transparent;
+  }
+  .gen-warning[data-warning-asset]:not([data-warning-asset=""]),
+  .gen-warning[data-warning-conn]:not([data-warning-conn=""]){cursor:pointer;}
+  .gen-warning:hover{background:rgba(255,255,255,0.04);}
+  .gw-error{background:rgba(232,87,75,0.10);color:var(--danger);border-left-color:var(--danger);}
+  .gw-advice{background:rgba(227,167,61,0.08);color:var(--warning);border-left-color:var(--warning);}
 
   /* Startup scripts. A monospace textarea, since the content is shell. */
   .field-row textarea{
