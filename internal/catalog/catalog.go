@@ -61,6 +61,25 @@ type ParamField struct {
 	RequiresValue string `json:"requiresValue,omitempty"`
 }
 
+// GateOpen reports whether a RequiresParam / RequiresValue gate is satisfied by a
+// set of params. With a value the directive must equal it; without one it must be
+// on; an empty gate always applies.
+//
+// This is the single definition. The drawer decides whether to show a field with
+// it and the generator decides whether to emit one, and when each had its own
+// copy the drawer could offer a field that generation silently dropped.
+func GateOpen(requiresParam, requiresValue string, params map[string]any) bool {
+	if requiresParam == "" {
+		return true
+	}
+	if requiresValue != "" {
+		got, _ := params[requiresParam].(string)
+		return got == requiresValue
+	}
+	on, _ := params[requiresParam].(bool)
+	return on
+}
+
 // ParamKey is how this field is keyed in Asset.Params. Two fields can share a
 // leaf name in different blocks, so the block path is part of the identity.
 func (f ParamField) ParamKey() string {
@@ -97,7 +116,11 @@ type Fixed struct {
 type Variable struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	Type        string `json:"type,omitempty"` // defaults to string
+	// DefaultFromParam names an account param whose value becomes this variable's
+	// default when the chart supplies one. The variable itself stays, so the value
+	// can still be overridden per apply with TF_VAR without editing the chart —
+	// the same shape the region uses.
+	DefaultFromParam string `json:"defaultFromParam,omitempty"`
 	// Default is rendered HCL. Never set it on a sensitive variable: a default
 	// means no prompt, so the secret would silently be whatever was defaulted.
 	Default   string `json:"default,omitempty"`
@@ -202,38 +225,42 @@ func StaticAddressToggle() ParamField {
 // the spelling of the values differs, which is why it is one key.
 const ParamRegion = "region"
 
+// ParamProject is the GCP project every resource in an account is created in.
+// Google has no account-wide default for it and nothing can be planned without
+// one, which is why it is an account setting rather than a Terraform variable
+// the user has to remember to set.
+const ParamProject = "project"
+
 // AccountSettings returns the params every account gets. The region list is the
 // provider's own, because "eu-west-2" and "uksouth" name the same place.
 //
 // The two key fields are account-wide defaults. An asset that sets its own key
 // overrides them, and an unset account key falls through to the deployment-wide
 // Terraform variable — see sshKeyExpr in internal/tofu/ansible.go for the order.
-// Nil regions omits the region field, for a provider that has no account-wide
-// region to set — DigitalOcean picks one per resource, so an account-level one
-// there would be a setting that changes nothing.
-func AccountSettings(regions []string, defaultRegion string) []ParamField {
-	var out []ParamField
-	if regions != nil {
-		out = append(out, ParamField{
-			Key: ParamRegion, Label: "Region", Type: FieldSelect,
-			Options: regions, Default: defaultRegion, Directive: true,
-		})
+// extra carries the settings only one provider has, placed after the region and
+// before the keys so the cloud-specific field reads with the cloud-specific one
+// above it. GCP's project ID is the only one so far.
+func AccountSettings(regions []string, defaultRegion string, extra ...ParamField) []ParamField {
+	out := []ParamField{
+		{Key: ParamRegion, Label: "Region", Type: FieldSelect,
+			Options: regions, Default: defaultRegion, Directive: true},
 	}
+	out = append(out, extra...)
 	return append(out,
 		ParamField{Key: ParamSSHPublicKey, Label: "Default SSH public key", Type: FieldScript, Default: "", Directive: true},
 		ParamField{Key: ParamSSHPublicKeyFile, Label: "Default SSH public key file", Type: FieldText, Default: "", Directive: true},
 	)
 }
 
-// Region returns an account's configured region, or the provider's default when
-// the chart has none. The generator needs a value regardless: the region variable
-// is always declared, because a provider block with no region will not plan.
-func (p Provider) Region(params map[string]any) string {
+// AccountParam returns an account's value for one of its provider's account
+// params, falling back to the field's own default. Empty when the provider
+// declares no such param, or when neither the chart nor the default supplies one.
+func (p Provider) AccountParam(params map[string]any, key string) string {
 	for _, f := range p.AccountParams {
-		if f.Key != ParamRegion {
+		if f.Key != key {
 			continue
 		}
-		if v, ok := params[ParamRegion].(string); ok && v != "" {
+		if v, ok := params[key].(string); ok && v != "" {
 			return v
 		}
 		if d, ok := f.Default.(string); ok {
@@ -241,6 +268,13 @@ func (p Provider) Region(params map[string]any) string {
 		}
 	}
 	return ""
+}
+
+// Region returns an account's configured region, or the provider's default when
+// the chart has none. The generator needs a value regardless: the region variable
+// is always declared, because a provider block with no region will not plan.
+func (p Provider) Region(params map[string]any) string {
+	return p.AccountParam(params, ParamRegion)
 }
 
 // AccountDefaults seeds a new account's params from its provider.
@@ -317,6 +351,29 @@ type ResourceType struct {
 	// holds anything. An unset address attribute is empty rather than an error,
 	// so without this an inventory line came out blank and an apply looked fine.
 	AddressRequires string `json:"addressRequires,omitempty"`
+
+	// PrivateAddressAttr is the attribute holding the address this resource has
+	// inside its own network. It is only used by the Ansible inventory, never by a
+	// firewall rule — a rule between two assets in one account uses a security
+	// group reference, which cannot go stale the way a written-down address can.
+	//
+	// Unlike AddressAttr this needs no kind and no gate: a machine in a VPC always
+	// has a private address, so the attribute is always populated.
+	PrivateAddressAttr string `json:"privateAddressAttr,omitempty"`
+
+	// FirewallRef is the expression a firewall uses to name this asset, for the
+	// providers whose firewall points at the resource rather than the resource
+	// pointing at its firewall — Azure needs a network interface, DigitalOcean a
+	// droplet ID. {{asset}} expands to the asset ID.
+	//
+	// Empty means this provider's firewall cannot attach to this type. Azure SQL,
+	// AKS and App Gateway have no NIC, and DigitalOcean's managed database,
+	// Kubernetes cluster and load balancer are not droplets — emitting an
+	// attachment for them named a resource that does not exist, which failed at
+	// validate. They now generate no rule and are reported instead: a rule that
+	// attaches to nothing controls nothing, which is worse than no output because
+	// it looks like the tool worked.
+	FirewallRef string `json:"firewallRef,omitempty"`
 
 	Params []ParamField `json:"params"`
 }

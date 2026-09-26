@@ -18,11 +18,7 @@ import (
 
 // ansibleOn reports whether an asset is managed with Ansible.
 func ansibleOn(a *model.Asset) bool {
-	if a == nil {
-		return false
-	}
-	on, _ := a.Params[catalog.ParamAnsible].(bool)
-	return on
+	return boolParam(a, catalog.ParamAnsible)
 }
 
 // param reads a directive's string value.
@@ -152,11 +148,11 @@ func usesSSHKey(rt catalog.ResourceType, a model.Asset) bool {
 func sshKeyVars(accountID, accountName string) []varDecl {
 	return []varDecl{
 		{
-			Name: deploymentKeyVar, Type: "string", Default: `""`,
+			Name: deploymentKeyVar, Default: `""`,
 			Description: `SSH public key for every Ansible host. export TF_VAR_ssh_public_key="$(cat ~/.ssh/id_ed25519.pub)"`,
 		},
 		{
-			Name: accountID + "_ssh_public_key", Type: "string", Default: `""`,
+			Name: accountID + "_ssh_public_key", Default: `""`,
 			Description: "SSH public key for Ansible hosts in " + accountName + ", overriding the deployment key",
 		},
 	}
@@ -263,9 +259,14 @@ func ansibleWarnings(s model.Session, r Report) []string {
 					"%s has both a pasted SSH key and a key file — the pasted one wins. "+
 						"Clear one of them to say which you meant", label))
 			}
-			if expr, err := hostAddress(acc, a); err != nil {
+			expr, err := hostAddress(acc, a)
+			switch {
+			case err != nil && privateAddress(acc, a) != "":
+				out = append(out, fmt.Sprintf("%s is managed with Ansible but %s. The inventory names its "+
+					"private address instead, which only works with Ansible running inside the network", label, err))
+			case err != nil:
 				out = append(out, fmt.Sprintf("%s is managed with Ansible but %s", label, err))
-			} else if expr == "" {
+			case expr == "":
 				out = append(out, fmt.Sprintf("%s is managed with Ansible but has no address to put in the inventory", label))
 			}
 		}
@@ -305,6 +306,21 @@ func hostAddress(acc model.Account, a *model.Asset) (string, error) {
 	return fmt.Sprintf("${%s.%s.%s}", rt.TofuType, a.ID, rt.AddressAttr), nil
 }
 
+// privateAddress is the address an asset holds inside its own network, or empty
+// when its type exposes none.
+//
+// It needs no gate: a machine in a VPC always has one, where a public address
+// exists only if something was turned on to give it one. That is why a host with
+// no public address still belongs in the inventory — it is reachable from a jump
+// box or a VPN, just not from where infrachart is running.
+func privateAddress(acc model.Account, a *model.Asset) string {
+	rt, ok := catalog.Type(acc.Provider, a.Code)
+	if !ok || rt.PrivateAddressAttr == "" {
+		return ""
+	}
+	return fmt.Sprintf("${%s.%s.%s}", rt.TofuType, a.ID, rt.PrivateAddressAttr)
+}
+
 // noPublicAddress reports why an asset has no address anything outside its own
 // network could reach, or "" when it has one.
 //
@@ -319,7 +335,7 @@ func noPublicAddress(rt catalog.ResourceType, a *model.Asset) string {
 	if rt.AddressRequires == "" {
 		return ""
 	}
-	if on, _ := a.Params[rt.AddressRequires].(bool); on {
+	if boolParam(a, rt.AddressRequires) {
 		return ""
 	}
 	// A durable address is an address: the static toggle allocates one and attaches
@@ -350,6 +366,10 @@ func paramLabel(rt catalog.ResourceType, key string) string {
 // the provider's stock image creates.
 type inventoryHost struct {
 	Address string
+	// Private is written commented out beneath Address, for anyone running Ansible
+	// from inside the network. Empty when the type has no private address, or when
+	// the private address is the only one there is and so became Address itself.
+	Private string
 	User    string
 	Label   string
 }
@@ -367,22 +387,31 @@ func inventory(s model.Session) (groups []string, hosts map[string][]inventoryHo
 				continue
 			}
 			addr, err := hostAddress(acc, a)
-			if err != nil || addr == "" {
+			if err != nil {
+				addr = ""
+			}
+			priv := privateAddress(acc, a)
+			if addr == "" && priv == "" {
 				continue
 			}
 			g, _ := group(a)
 			if _, seen := hosts[g]; !seen {
 				groups = append(groups, g)
 			}
-			user := param(a, catalog.ParamAnsibleUser)
-			if user == "" {
-				user = "root"
-			}
-			hosts[g] = append(hosts[g], inventoryHost{
+			h := inventoryHost{
 				Address: addr,
-				User:    user,
+				Private: priv,
+				User:    loginUser(a),
 				Label:   acc.Name + " → " + a.Name,
-			})
+			}
+			// The public address is the one Ansible connects to, because that is
+			// where infrachart is being run from. With no public address the private
+			// one is all there is, so it becomes the line rather than the comment.
+			if addr == "" {
+				h.Address, h.Private = priv, ""
+				h.Label += " (private address only)"
+			}
+			hosts[g] = append(hosts[g], h)
 		}
 	}
 	sort.Strings(groups)
@@ -394,18 +423,22 @@ func inventory(s model.Session) (groups []string, hosts map[string][]inventoryHo
 //
 // It cannot be a file infrachart writes: an inventory needs real addresses, and
 // those do not exist until after apply.
-func renderInventory(w *writer, s model.Session) bool {
-	groups, hosts := inventory(s)
+func renderInventory(w *writer, groups []string, hosts map[string][]inventoryHost) {
 	if len(groups) == 0 {
-		return false
+		return
 	}
 
 	var body strings.Builder
 	body.WriteString("# Generated by infrachart. A skeleton — adjust it to your setup.\n")
+	body.WriteString("# A commented address under a host is its private one. Swap the two if you\n")
+	body.WriteString("# run Ansible from inside the network.\n")
 	for _, g := range groups {
 		fmt.Fprintf(&body, "\n[%s]\n", g)
 		for _, h := range hosts[g] {
 			fmt.Fprintf(&body, "# %s\n%s ansible_user=%s\n", h.Label, h.Address, h.User)
+			if h.Private != "" {
+				fmt.Fprintf(&body, "# %s ansible_user=%s\n", h.Private, h.User)
+			}
 		}
 	}
 	body.WriteString("\n[all:vars]\n")
@@ -428,7 +461,6 @@ func renderInventory(w *writer, s model.Session) bool {
 		w.arg("filename", `"${path.cwd}/.gitignore"`)
 		w.arg("content", heredoc("inventory.ini\nterraform.tfstate\nterraform.tfstate.backup\n.terraform/\n"))
 	})
-	return true
 }
 
 // heredoc renders a multi-line body as an indented HCL heredoc. Address

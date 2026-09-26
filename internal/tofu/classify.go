@@ -264,11 +264,11 @@ func sourceAddress(from Endpoint) Outcome {
 func addressExpr(rt catalog.ResourceType, a *model.Asset) (expr, reason string) {
 	switch rt.AddressKind {
 	case catalog.AddrStaticIP:
-		return fmt.Sprintf("${%s.%s.%s}", rt.TofuType, resourceName(a.ID), rt.AddressAttr), ""
+		return fmt.Sprintf("${%s.%s.%s}", rt.TofuType, a.ID, rt.AddressAttr), ""
 
 	case catalog.AddrEphemeralIP:
 		if staticEnabled(a) && rt.StaticAddr != nil {
-			return fmt.Sprintf("${%s.%s.%s}", rt.StaticAddr.TofuType, resourceName(a.ID), rt.StaticAddr.Attr), ""
+			return fmt.Sprintf("${%s.%s.%s}", rt.StaticAddr.TofuType, a.ID, rt.StaticAddr.Attr), ""
 		}
 		return "", fmt.Sprintf("has an address (%s.%s) that changes when the instance restarts, so it "+
 			"would break silently — enable \"Static public IP\" on it", rt.TofuType, rt.AddressAttr)
@@ -307,18 +307,17 @@ func edgeConstruct(provider string) string {
 }
 
 func staticEnabled(a *model.Asset) bool {
+	return boolParam(a, catalog.ParamStaticPublicIP)
+}
+
+// boolParam reads a boolean directive. Normalise has already coerced the value,
+// so a missing or wrong-typed one means off.
+func boolParam(a *model.Asset, key string) bool {
 	if a == nil {
 		return false
 	}
-	on, _ := a.Params[catalog.ParamStaticPublicIP].(bool)
+	on, _ := a.Params[key].(bool)
 	return on
-}
-
-// resourceName derives an HCL resource name from an asset ID. Addresses must not
-// depend on display names: a name-derived address means renaming an asset
-// destroys and recreates the resource on the next apply.
-func resourceName(assetID string) string {
-	return assetID
 }
 
 // NeedsAction reports whether an outcome requires the user to do something. An
@@ -340,11 +339,7 @@ func (r Report) Warnings() []string {
 				continue
 			}
 			label := fmt.Sprintf("%s → %s", f.From.Label, f.To.Label)
-			port := o.Rule.Port
-			if port == "" {
-				port = "(unset)"
-			}
-			label += fmt.Sprintf(" (%s/%s)", o.Rule.Protocol, port)
+			label += fmt.Sprintf(" (%s/%s)", o.Rule.Protocol, portOrAny(o.Rule.Port))
 			prefix := "no rule generated"
 			if o.Strategy == StratEdgeForeign {
 				prefix = "not expressible as a firewall rule"

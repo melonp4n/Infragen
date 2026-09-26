@@ -11,10 +11,11 @@ import (
 	"context"
 	"crypto/rand"
 	"embed"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -208,7 +209,7 @@ func generate(w http.ResponseWriter, r *http.Request) {
 	body.WriteString(hcl)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	if _, err := w.Write([]byte(body.String())); err != nil {
+	if _, err := io.WriteString(w, body.String()); err != nil {
 		log.Printf("generate: %v", err)
 	}
 }
@@ -274,20 +275,16 @@ func checkText(v string) error {
 }
 
 var (
-	errTooLong     = &textError{"value is too long"}
-	errControlChar = &textError{"value contains a control character"}
+	errTooLong     = errors.New("value is too long")
+	errControlChar = errors.New("value contains a control character")
 )
-
-type textError struct{ msg string }
-
-func (e *textError) Error() string { return e.msg }
 
 // newID mints an identifier that survives export and re-import. Random rather
 // than sequential so merging two sessions by hand cannot collide.
+//
+// rand.Text panics internally if the system source fails, which is the same
+// answer the hand-rolled version gave: crypto/rand failing means the process
+// cannot be trusted.
 func newID(prefix string) string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		panic(err) // crypto/rand failing means the process cannot be trusted
-	}
-	return prefix + "_" + hex.EncodeToString(b)
+	return prefix + "_" + rand.Text()
 }

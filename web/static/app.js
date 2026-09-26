@@ -25,9 +25,10 @@
   const INTERNET = 'internet'
   const EXTIP = 'extip'
   const ASSET = 'asset'
-  // Not a node type — an account is a container, so it is never a connection
-  // endpoint. It is a selection kind because it has settings to edit.
+  // Not node types. An account is a container, so it is never a connection
+  // endpoint; both are selection kinds because both have something to edit.
   const ACCOUNT = 'account'
+  const CONN = 'conn'
 
   boot()
 
@@ -102,28 +103,21 @@
     return !!findAsset(n.accountId, n.assetId)
   }
 
-  function nodeLabel(n) {
-    if (n.type === INTERNET) return 'Internet'
-    if (n.type === EXTIP) {
-      const e = findExtIp(n.id)
-      return e ? e.label + ' (' + e.ip + ')' : '(removed)'
-    }
-    const acc = findAccount(n.accountId)
-    if (!acc) return '(removed)'
-    const asset = findAsset(n.accountId, n.assetId)
-    return asset ? acc.name + ' → ' + asset.name : acc.name + ' / (removed)'
-  }
-
   // ---- line rendering ------------------------------------------------------
 
   // A connection touching the internet is classified by direction, because
   // inbound and outbound mean very different things for exposure.
+  //
+  // This is the browser half of model.Connection.InternetTraffic(), which the
+  // drawer and the generator share. The two must agree: red means the public
+  // internet can initiate inwards, and nothing else in the UI says that.
   function internetExposure(conn) {
     if (conn.a.type !== INTERNET && conn.b.type !== INTERNET) return null
     const internetIsA = conn.a.type === INTERNET
-    const inbound = internetIsA ? conn.aToB : conn.bToA
-    const outbound = internetIsA ? conn.bToA : conn.aToB
-    return { internetIsA, inbound, outbound, hasInbound: inbound.length > 0, hasOutbound: outbound.length > 0 }
+    return {
+      hasInbound: (internetIsA ? conn.aToB : conn.bToA).length > 0,
+      hasOutbound: (internetIsA ? conn.bToA : conn.aToB).length > 0
+    }
   }
 
   function connLinkKind(conn) {
@@ -167,20 +161,40 @@
     return document.createElementNS('http://www.w3.org/2000/svg', name)
   }
 
+  // updateLines coalesces to one redraw per frame. A drag fires mousemove far
+  // more often than the display refreshes, and every redraw reads layout, so an
+  // unthrottled one recomputed the whole overlay several times per painted frame.
+  let redrawQueued = false
+
   function updateLines() {
+    if (redrawQueued) return
+    redrawQueued = true
+    requestAnimationFrame(() => {
+      redrawQueued = false
+      drawLines()
+    })
+  }
+
+  function drawLines() {
     const canvasRect = canvas.getBoundingClientRect()
-    linesLayer.textContent = ''
+    // Every connector position is read before anything is written. Interleaving
+    // the two made each getBoundingClientRect force a layout recalculation of
+    // the SVG the previous iteration had just appended.
+    const placed = []
     for (const conn of state.connections) {
       const p1 = pointFor(conn.a, canvasRect)
       const p2 = pointFor(conn.b, canvasRect)
-      if (!p1 || !p2) continue
+      if (p1 && p2) placed.push({ conn, p1, p2 })
+    }
 
+    linesLayer.textContent = ''
+    for (const { conn, p1, p2 } of placed) {
       const style = lineStyle(conn)
       const midY = (p1.y + p2.y) / 2
       const c1y = p1.y + Math.max(40, Math.abs(midY - p1.y))
       const c2y = p2.y + Math.max(40, Math.abs(midY - p2.y))
       const d = 'M ' + p1.x + ' ' + p1.y + ' C ' + p1.x + ' ' + c1y + ', ' + p2.x + ' ' + c2y + ', ' + p2.x + ' ' + p2.y
-      const selected = selection && selection.kind === 'conn' && selection.id === conn.id
+      const selected = selection && selection.kind === CONN && selection.id === conn.id
 
       const g = svgEl('g')
 
@@ -244,36 +258,34 @@
 
   // Drag is entirely local — a round-trip per mousemove would be unusable, and
   // position is the one piece of state the server never needs mid-edit.
-  function startDrag(event, el, onMove, onClick) {
+  function startDrag(event, onMove, onClick) {
     event.preventDefault()
     let lastX = event.clientX
     let lastY = event.clientY
     const originX = event.clientX
     const originY = event.clientY
+    // One AbortController drops both listeners, so neither can outlive the drag.
+    const drag = new AbortController()
 
-    function move(ev) {
+    document.addEventListener('mousemove', ev => {
       onMove((ev.clientX - lastX) / zoom, (ev.clientY - lastY) / zoom)
       lastX = ev.clientX
       lastY = ev.clientY
       updateLines()
-    }
+    }, { signal: drag.signal })
 
-    function up(ev) {
-      document.removeEventListener('mousemove', move)
-      document.removeEventListener('mouseup', up)
+    document.addEventListener('mouseup', ev => {
+      drag.abort()
       // A drag that never moved is a click.
       if (onClick && Math.abs(ev.clientX - originX) + Math.abs(ev.clientY - originY) < 4) {
         onClick()
       }
-    }
-
-    document.addEventListener('mousemove', move)
-    document.addEventListener('mouseup', up)
+    }, { signal: drag.signal })
   }
 
   function dragAccount(event, el) {
     const acc = findAccount(el.dataset.accountId)
-    startDrag(event, el, (dx, dy) => {
+    startDrag(event, (dx, dy) => {
       acc.x += dx
       acc.y += dy
       moveNode(el, acc.x, acc.y)
@@ -281,7 +293,7 @@
   }
 
   function dragInternet(event, el) {
-    startDrag(event, el, (dx, dy) => {
+    startDrag(event, (dx, dy) => {
       state.internet.x += dx
       state.internet.y += dy
       moveNode(el, state.internet.x, state.internet.y)
@@ -290,7 +302,7 @@
 
   function dragExtIp(event, el) {
     const e = findExtIp(el.dataset.extipId)
-    startDrag(event, el, (dx, dy) => {
+    startDrag(event, (dx, dy) => {
       e.x += dx
       e.y += dy
       moveNode(el, e.x, e.y)
@@ -319,14 +331,14 @@
       return pair.includes(fromKey) && pair.includes(key)
     })
     if (existing) {
-      select({ kind: 'conn', id: existing.id })
+      select({ kind: CONN, id: existing.id })
       return
     }
 
     const conn = { id: localId('conn'), a: keyToNode(fromKey), b: keyToNode(key), aToB: [], bToA: [] }
     state.connections.push(conn)
     updateLines()
-    select({ kind: 'conn', id: conn.id })
+    select({ kind: CONN, id: conn.id })
   }
 
   function clearConnecting() {
@@ -338,28 +350,39 @@
   // Connections are never rendered by the server, so their ids are minted here.
   // Random, to stay collision-free against ids from an imported session.
   function localId(prefix) {
-    return prefix + '_' + crypto.randomUUID().slice(0, 16).replace(/-/g, '')
+    return prefix + '_' + crypto.randomUUID()
   }
 
   // ---- selection -----------------------------------------------------------
+
+  // nodeEl finds the rendered element for a selection kind. The class and data
+  // attribute pairs are the contract with the templ components — see the class
+  // table in documentation/UI.md.
+  function nodeEl(kind, id) {
+    const selector = {
+      [ASSET]: '.asset[data-asset-id="',
+      [EXTIP]: '.extip-node[data-extip-id="',
+      [ACCOUNT]: '.account[data-account-id="'
+    }[kind]
+    return selector ? canvas.querySelector(selector + id + '"]') : null
+  }
+
+  // selectionId is the id a selection refers to, which the three kinds spell
+  // differently because an asset needs its account to be found at all.
+  function selectionId(sel) {
+    if (!sel) return null
+    if (sel.kind === ASSET) return sel.assetId
+    if (sel.kind === ACCOUNT) return sel.accountId
+    return sel.id
+  }
 
   function select(next) {
     selection = next
     for (const el of canvas.querySelectorAll('.selected')) {
       el.classList.remove('selected')
     }
-    if (selection && selection.kind === ASSET) {
-      const el = canvas.querySelector('.asset[data-asset-id="' + selection.assetId + '"]')
-      if (el) el.classList.add('selected')
-    }
-    if (selection && selection.kind === EXTIP) {
-      const el = canvas.querySelector('.extip-node[data-extip-id="' + selection.id + '"]')
-      if (el) el.classList.add('selected')
-    }
-    if (selection && selection.kind === ACCOUNT) {
-      const el = canvas.querySelector('.account[data-account-id="' + selection.accountId + '"]')
-      if (el) el.classList.add('selected')
-    }
+    const el = selection && nodeEl(selection.kind, selectionId(selection))
+    if (el) el.classList.add('selected')
     updateLines()
     openDrawer()
   }
@@ -381,11 +404,11 @@
     const y = 120 + Math.floor(n / 3) * 300
     const html = await postForHTML('/api/render/account', { id: '', name, provider, x, y, assets: [] })
     const el = insert(html)
-    const params = {}
-    for (const f of catalog[provider].accountParams || []) {
-      params[f.key] = f.default
-    }
-    state.accounts.push({ id: el.dataset.accountId, name, provider, x, y, params, assets: [] })
+    // No defaults are filled in here. model.Normalise fills every missing param
+    // from the catalog on the next round trip, and the browser keying them by
+    // `key` where Go keys by `block + "." + key` meant a nested field was stored
+    // under a name nothing else used.
+    state.accounts.push({ id: el.dataset.accountId, name, provider, x, y, params: {}, assets: [] })
   }
 
   async function addExtIp(label, ip) {
@@ -416,36 +439,23 @@
     const tile = parseFragment(html)
     accountEl.querySelector('.add-tile').before(tile)
 
-    const params = {}
-    for (const f of type.params) {
-      params[f.key] = f.default
+    acc.assets.push({ id: tile.dataset.assetId, code, name, params: {} })
+    updateLines()
+  }
+
+  // removeNode is the one deletion path. Dropping a node also drops every
+  // connection that referenced it, and clears the selection when the selected
+  // thing — or the connection that was selected — has just gone.
+  function removeNode(kind, id) {
+    if (kind === ACCOUNT) state.accounts = state.accounts.filter(a => a.id !== id)
+    if (kind === EXTIP) state.externalIps = state.externalIps.filter(e => e.id !== id)
+    if (kind === ASSET) {
+      for (const acc of state.accounts) acc.assets = acc.assets.filter(a => a.id !== id)
     }
-    acc.assets.push({ id: tile.dataset.assetId, code, name, params })
-    updateLines()
-  }
-
-  function removeAccount(id) {
-    state.accounts = state.accounts.filter(a => a.id !== id)
     dropDanglingConnections()
-    canvas.querySelector('.account[data-account-id="' + id + '"]').remove()
-    if (selection && (selection.accountId === id || selection.kind === 'conn')) clearSelection()
-    updateLines()
-  }
-
-  function removeAsset(accountId, assetId) {
-    const acc = findAccount(accountId)
-    acc.assets = acc.assets.filter(a => a.id !== assetId)
-    dropDanglingConnections()
-    canvas.querySelector('.asset[data-asset-id="' + assetId + '"]').remove()
-    if (selection && (selection.assetId === assetId || selection.kind === 'conn')) clearSelection()
-    updateLines()
-  }
-
-  function removeExtIp(id) {
-    state.externalIps = state.externalIps.filter(e => e.id !== id)
-    dropDanglingConnections()
-    canvas.querySelector('.extip-node[data-extip-id="' + id + '"]').remove()
-    if (selection && (selection.id === id || selection.kind === 'conn')) clearSelection()
+    const el = nodeEl(kind, id)
+    if (el) el.remove()
+    if (selection && (selectionId(selection) === id || selection.kind === CONN)) clearSelection()
     updateLines()
   }
 
@@ -602,7 +612,7 @@
   }
 
   function selectedRules(dir) {
-    const conn = selection && selection.kind === 'conn' ? findConn(selection.id) : null
+    const conn = selection && selection.kind === CONN ? findConn(selection.id) : null
     return conn ? (dir === 'aToB' ? conn.aToB : conn.bToA) : null
   }
 
@@ -729,10 +739,8 @@
 
   function deleteSelected() {
     if (!selection) return
-    if (selection.kind === 'conn') removeConnection(selection.id)
-    else if (selection.kind === ACCOUNT) removeAccount(selection.accountId)
-    else if (selection.kind === ASSET) removeAsset(selection.accountId, selection.assetId)
-    else if (selection.kind === EXTIP) removeExtIp(selection.id)
+    if (selection.kind === CONN) removeConnection(selection.id)
+    else removeNode(selection.kind, selectionId(selection))
   }
 
   // ---- events --------------------------------------------------------------
@@ -825,18 +833,18 @@
     }
     const closeAccount = event.target.closest('.account-close')
     if (closeAccount) {
-      removeAccount(closeAccount.closest('.account').dataset.accountId)
+      removeNode(ACCOUNT, closeAccount.closest('.account').dataset.accountId)
       return
     }
     const closeAsset = event.target.closest('.asset-close')
     if (closeAsset) {
       const tile = closeAsset.closest('.asset')
-      removeAsset(tile.dataset.accountId, tile.dataset.assetId)
+      removeNode(ASSET, tile.dataset.assetId)
       return
     }
     const closeExtIp = event.target.closest('.extip-close')
     if (closeExtIp) {
-      removeExtIp(closeExtIp.closest('.extip-node').dataset.extipId)
+      removeNode(EXTIP, closeExtIp.closest('.extip-node').dataset.extipId)
       return
     }
     const settings = event.target.closest('.account-settings')
@@ -852,7 +860,7 @@
     }
     const line = event.target.closest('[data-conn-id]')
     if (line) {
-      select({ kind: 'conn', id: line.dataset.connId })
+      select({ kind: CONN, id: line.dataset.connId })
       return
     }
     const tile = event.target.closest('.asset')
@@ -928,6 +936,11 @@
 
   // The per-provider menus are pre-rendered; opening one is a position and a
   // class toggle.
+  //
+  // The menu is positioned in viewport pixels and stays where the server put it,
+  // outside #canvas. Moving it into the canvas needed a zoom conversion, and left
+  // it there permanently — so the next import, which replaces the canvas markup
+  // wholesale, destroyed it and that provider's ✛ tile silently stopped working.
   function openTypeMenu(addTile) {
     closeFloatingPanels()
     const account = addTile.closest('.account')
@@ -935,12 +948,10 @@
     const menu = document.querySelector('.type-menu[data-type-menu="' + provider + '"]')
     if (!menu) return
     const tileRect = addTile.getBoundingClientRect()
-    const canvasRect = canvas.getBoundingClientRect()
     menu.dataset.accountId = account.dataset.accountId
-    menu.style.left = (tileRect.left - canvasRect.left) / zoom + 'px'
-    menu.style.top = (tileRect.bottom - canvasRect.top) / zoom + 6 + 'px'
+    menu.style.left = tileRect.left + 'px'
+    menu.style.top = tileRect.bottom + 6 + 'px'
     menu.classList.remove('hidden')
-    canvas.appendChild(menu)
   }
 
   function bindToolbar() {

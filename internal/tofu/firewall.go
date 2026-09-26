@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"infrachart/internal/catalog"
+	"infrachart/internal/model"
 )
 
 // Rule direction, from the point of view of the asset the rule attaches to.
@@ -46,8 +47,13 @@ type fwRule struct {
 // one-block-per-rule interface could not express it.
 type firewall interface {
 	add(fwRule)
-	render(w *writer, accountID string)
+	render(w *writer, acc model.Account)
 }
+
+// ruleList is the accumulator half of that interface, which every provider shares.
+type ruleList struct{ rules []fwRule }
+
+func (l *ruleList) add(r fwRule) { l.rules = append(l.rules, r) }
 
 func newFirewall(provider string) firewall {
 	switch provider {
@@ -89,153 +95,31 @@ func ruleName(r fwRule, index int) string {
 	return fmt.Sprintf("%s_%s_%s_%s_%d", r.Asset, r.Dir, strings.ToLower(r.Proto), port, index)
 }
 
-// ---- AWS -------------------------------------------------------------------
-
-// AWS is the straightforward case: one security group per asset, and one rule
-// resource per rule. A source can be another security group, which is the only
-// representation that cannot go stale.
-type awsFirewall struct{ rules []fwRule }
-
-func (f *awsFirewall) add(r fwRule) { f.rules = append(f.rules, r) }
-
-func (f *awsFirewall) render(w *writer, accountID string) {
-	assets, grouped := byAsset(f.rules)
-	for _, asset := range assets {
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "aws_security_group", asset), func() {
-			w.arg("provider", "aws."+accountID)
-			w.arg("name", quote(asset))
-			w.arg("vpc_id", fmt.Sprintf("aws_vpc.%s.id", accountID))
-		})
-		for i, r := range grouped[asset] {
-			f.renderRule(w, accountID, r, i)
-		}
+// firewallRef is the expression this provider's firewall uses to name an asset,
+// for the two clouds whose firewall points at the resource rather than the other
+// way round.
+//
+// Empty means nothing can attach to this type — an Azure SQL database has no
+// network interface, a DigitalOcean managed database is not a droplet — and the
+// caller must emit nothing rather than a reference to a resource that will not
+// exist. attachmentGaps reports what that leaves unprotected.
+func firewallRef(acc model.Account, assetID string) string {
+	a := acc.Asset(assetID)
+	if a == nil {
+		return ""
 	}
-}
-
-func (f *awsFirewall) renderRule(w *writer, accountID string, r fwRule, index int) {
-	resource := "aws_vpc_security_group_ingress_rule"
-	peerArg := "cidr_ipv4"
-	if r.Dir == dirEgress {
-		resource = "aws_vpc_security_group_egress_rule"
+	rt, ok := catalog.Type(acc.Provider, a.Code)
+	if !ok || rt.FirewallRef == "" {
+		return ""
 	}
-	w.blank()
-	w.line("# %s", r.Comment)
-	w.block(fmt.Sprintf("resource %q %q", resource, ruleName(r, index)), func() {
-		w.arg("provider", "aws."+accountID)
-		w.arg("security_group_id", fmt.Sprintf("aws_security_group.%s.id", r.Asset))
-		w.arg("ip_protocol", quote(awsProto(r.Proto)))
-		// TCP and UDP rules must carry a port range even when the rule covers all
-		// ports: AWS rejects a tcp rule with no ports at apply time, and `validate`
-		// does not catch it because the schema marks them optional.
-		if r.Proto == "TCP" || r.Proto == "UDP" {
-			lo, hi := r.Lo, r.Hi
-			if r.AnyPort {
-				lo, hi = 0, 65535
-			}
-			w.arg("from_port", fmt.Sprint(lo))
-			w.arg("to_port", fmt.Sprint(hi))
-		}
-		switch r.Kind {
-		case peerSecurityGroup:
-			w.arg("referenced_security_group_id", fmt.Sprintf("aws_security_group.%s.id", r.Peer))
-		case peerPrefixList:
-			w.arg("prefix_list_id", fmt.Sprintf("data.aws_ec2_managed_prefix_list.%s.id", prefixListName(r.Peer)))
-		default:
-			w.arg(peerArg, interp(r.Peer))
-		}
-	})
+	return expand(rt.FirewallRef, exprCtx{accountID: acc.ID, assetID: a.ID})
 }
 
-func awsProto(p string) string {
-	if p == "ALL" {
-		return "-1"
-	}
-	return strings.ToLower(p)
-}
-
-// prefixListName turns a managed prefix list name into an HCL-safe data source
-// name, e.g. com.amazonaws.global.cloudfront.origin-facing.
-func prefixListName(list string) string {
-	r := strings.NewReplacer(".", "_", "-", "_")
-	return r.Replace(list)
-}
-
-// ---- Azure -----------------------------------------------------------------
-
-// Azure attaches rules to a network security group and orders them by priority.
-// Two rules sharing a priority is an apply error, so priorities are allocated
-// deterministically from position rather than chosen.
-type azureFirewall struct{ rules []fwRule }
-
-func (f *azureFirewall) add(r fwRule) { f.rules = append(f.rules, r) }
-
-func (f *azureFirewall) render(w *writer, accountID string) {
-	assets, grouped := byAsset(f.rules)
-	for _, asset := range assets {
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "azurerm_network_security_group", asset), func() {
-			w.arg("provider", "azurerm."+accountID)
-			w.arg("name", quote(asset))
-			w.arg("location", fmt.Sprintf("azurerm_resource_group.%s.location", accountID))
-			w.arg("resource_group_name", fmt.Sprintf("azurerm_resource_group.%s.name", accountID))
-		})
-		// The network interface companion is what makes this possible: Azure
-		// attaches a security group to a NIC or a subnet, never to a VM directly.
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "azurerm_network_interface_security_group_association", asset), func() {
-			w.arg("provider", "azurerm."+accountID)
-			w.arg("network_interface_id", fmt.Sprintf("azurerm_network_interface.%s_nic.id", asset))
-			w.arg("network_security_group_id", fmt.Sprintf("azurerm_network_security_group.%s.id", asset))
-		})
-		for i, r := range grouped[asset] {
-			f.renderRule(w, accountID, r, i)
-		}
-	}
-}
-
-func (f *azureFirewall) renderRule(w *writer, accountID string, r fwRule, index int) {
-	direction, peerKey, otherKey := "Inbound", "source_address_prefix", "destination_address_prefix"
-	if r.Dir == dirEgress {
-		direction, peerKey, otherKey = "Outbound", "destination_address_prefix", "source_address_prefix"
-	}
-	w.blank()
-	w.line("# %s", r.Comment)
-	w.block(fmt.Sprintf("resource %q %q", "azurerm_network_security_rule", ruleName(r, index)), func() {
-		w.arg("provider", "azurerm."+accountID)
-		w.arg("name", quote(ruleName(r, index)))
-		// Deterministic from position: Azure rejects duplicate priorities, and a
-		// regenerated chart must produce the same numbers.
-		w.arg("priority", fmt.Sprint(100+index))
-		w.arg("direction", quote(direction))
-		w.arg("access", quote("Allow"))
-		w.arg("protocol", quote(azureProto(r.Proto)))
-		w.arg("source_port_range", quote("*"))
-		w.arg("destination_port_range", quote(azurePorts(r)))
-		w.arg(peerKey, interp(azurePeer(r)))
-		w.arg(otherKey, quote("*"))
-		w.arg("resource_group_name", fmt.Sprintf("azurerm_resource_group.%s.name", accountID))
-		w.arg("network_security_group_name", fmt.Sprintf("azurerm_network_security_group.%s.name", r.Asset))
-	})
-}
-
-func azureProto(p string) string {
-	switch p {
-	case "ALL":
-		return "*"
-	case "TCP":
-		return "Tcp"
-	case "UDP":
-		return "Udp"
-	case "ICMP":
-		return "Icmp"
-	}
-	return "*"
-}
-
-func azurePorts(r fwRule) string {
-	if r.AnyPort || r.Proto == "ALL" {
-		return "*"
+// ports renders a rule's destination ports. anyPort is what this provider calls
+// "every port"; the three that need it spell it differently and otherwise agree.
+func ports(r fwRule, anyPort string) string {
+	if r.AnyPort {
+		return anyPort
 	}
 	if r.Lo == r.Hi {
 		return fmt.Sprint(r.Lo)
@@ -243,142 +127,27 @@ func azurePorts(r fwRule) string {
 	return fmt.Sprintf("%d-%d", r.Lo, r.Hi)
 }
 
-// azurePeer maps a peer to an address prefix. Azure has no group reference, so a
-// same-account pair falls back to the peer's private address.
-func azurePeer(r fwRule) string {
-	switch r.Kind {
-	case peerServiceTag:
-		return r.Peer
-	case peerSecurityGroup:
-		return fmt.Sprintf("${azurerm_linux_virtual_machine.%s.private_ip_address}/32", r.Peer)
-	default:
-		return r.Peer
+// lowerProto is the protocol as three of the four providers spell it: lowercase,
+// with each one's own word for "every protocol". Azure titlecases instead.
+func lowerProto(proto, all string) string {
+	if proto == "ALL" {
+		return all
 	}
-}
-
-// ---- GCP -------------------------------------------------------------------
-
-// GCP firewall rules live on the network and select instances by tag, so there is
-// no per-asset group. Each asset gets a generated tag.
-type gcpFirewall struct{ rules []fwRule }
-
-func (f *gcpFirewall) add(r fwRule) { f.rules = append(f.rules, r) }
-
-func (f *gcpFirewall) render(w *writer, accountID string) {
-	assets, grouped := byAsset(f.rules)
-	for _, asset := range assets {
-		for i, r := range grouped[asset] {
-			w.blank()
-			w.line("# %s", r.Comment)
-			w.block(fmt.Sprintf("resource %q %q", "google_compute_firewall", ruleName(r, i)), func() {
-				w.arg("provider", "google."+accountID)
-				w.arg("name", quote(strings.ReplaceAll(ruleName(r, i), "_", "-")))
-				w.arg("network", fmt.Sprintf("google_compute_network.%s.name", accountID))
-				w.arg("direction", quote(strings.ToUpper(r.Dir)))
-				w.block("allow", func() {
-					w.arg("protocol", quote(gcpProto(r.Proto)))
-					if !r.AnyPort && r.Proto != "ALL" {
-						w.arg("ports", fmt.Sprintf("[%s]", quote(gcpPorts(r))))
-					}
-				})
-				// Tags select which instances the rule applies to. Ranges are the
-				// only peer representation GCP offers here.
-				w.arg("target_tags", fmt.Sprintf("[%s]", quote(gcpTag(r.Asset))))
-				key := "source_ranges"
-				if r.Dir == dirEgress {
-					key = "destination_ranges"
-				}
-				w.arg(key, gcpRanges(r))
-			})
-		}
-	}
-}
-
-func gcpProto(p string) string {
-	if p == "ALL" {
-		return "all"
-	}
-	return strings.ToLower(p)
-}
-
-func gcpPorts(r fwRule) string {
-	if r.Lo == r.Hi {
-		return fmt.Sprint(r.Lo)
-	}
-	return fmt.Sprintf("%d-%d", r.Lo, r.Hi)
-}
-
-// gcpTag is the network tag for an asset. Tags must be lowercase and use hyphens.
-func gcpTag(assetID string) string {
-	return strings.ReplaceAll(strings.ToLower(assetID), "_", "-")
-}
-
-// gcpRanges renders the peer as a list of CIDRs. A same-account pair uses the
-// peer's tag instead, which GCP supports for source but not destination.
-func gcpRanges(r fwRule) string {
-	if r.Kind == peerSecurityGroup {
-		return fmt.Sprintf("[%s]", quote("10.0.0.0/8"))
-	}
-	parts := strings.Split(strings.TrimPrefix(r.Peer, "cidr:"), ",")
-	for i, p := range parts {
-		parts[i] = interp(strings.TrimSpace(p))
-	}
-	return "[" + strings.Join(parts, ", ") + "]"
-}
-
-// ---- DigitalOcean ----------------------------------------------------------
-
-// DigitalOcean puts inbound and outbound lists inside one firewall resource, so
-// its rules cannot be emitted one block at a time. This is the case the
-// accumulate-then-render interface exists for.
-type doFirewall struct{ rules []fwRule }
-
-func (f *doFirewall) add(r fwRule) { f.rules = append(f.rules, r) }
-
-func (f *doFirewall) render(w *writer, accountID string) {
-	assets, grouped := byAsset(f.rules)
-	for _, asset := range assets {
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "digitalocean_firewall", asset), func() {
-			w.arg("name", quote(strings.ReplaceAll(asset, "_", "-")))
-			w.arg("droplet_ids", fmt.Sprintf("[digitalocean_droplet.%s.id]", asset))
-			for _, r := range grouped[asset] {
-				blockName, peerKey := "inbound_rule", "source_addresses"
-				if r.Dir == dirEgress {
-					blockName, peerKey = "outbound_rule", "destination_addresses"
-				}
-				w.blank()
-				w.line("# %s", r.Comment)
-				w.block(blockName, func() {
-					w.arg("protocol", quote(strings.ToLower(r.Proto)))
-					w.arg("port_range", quote(doPorts(r)))
-					w.arg(peerKey, fmt.Sprintf("[%s]", interp(doPeer(r))))
-				})
-			}
-		})
-	}
-}
-
-func doPorts(r fwRule) string {
-	if r.AnyPort || r.Proto == "ALL" || r.Proto == "ICMP" {
-		return "all"
-	}
-	if r.Lo == r.Hi {
-		return fmt.Sprint(r.Lo)
-	}
-	return fmt.Sprintf("%d-%d", r.Lo, r.Hi)
-}
-
-// doPeer maps a peer to an address. DigitalOcean firewalls can reference droplets
-// by ID, which is what a same-account pair uses.
-func doPeer(r fwRule) string {
-	if r.Kind == peerSecurityGroup {
-		return fmt.Sprintf("${digitalocean_droplet.%s.ipv4_address}/32", r.Peer)
-	}
-	return strings.TrimPrefix(r.Peer, "cidr:")
+	return strings.ToLower(proto)
 }
 
 // ---- turning outcomes into rules -------------------------------------------
+
+// producesRule reports whether a classified outcome becomes a firewall rule at
+// all. The complement — the strategies that produce a comment instead — is what
+// notes() explains, so both read this rather than each listing half the table.
+func producesRule(s Strategy) bool {
+	switch s {
+	case StratRefused, StratIAM, StratPublicByDesign, StratEdgeForeign:
+		return false
+	}
+	return true
+}
 
 // fwRulesFor converts one classified outcome into the firewall rules it implies:
 // an ingress rule on the destination, an egress rule on the source, or both.
@@ -386,8 +155,7 @@ func doPeer(r fwRule) string {
 // Only firewalled endpoints get rules. Everything else was already classified as
 // IAM, public-by-design or refused, and produces nothing here.
 func fwRulesFor(f Flow, o Outcome) []fwRule {
-	if o.Strategy == StratRefused || o.Strategy == StratIAM ||
-		o.Strategy == StratPublicByDesign || o.Strategy == StratEdgeForeign {
+	if !producesRule(o.Strategy) {
 		return nil
 	}
 
@@ -405,8 +173,13 @@ func fwRulesFor(f Flow, o Outcome) []fwRule {
 	case StratEdgeNative:
 		kind = edgeKind(o.Source)
 	}
-	peer := strings.TrimPrefix(strings.TrimPrefix(o.Source,
-		"aws_ec2_managed_prefix_list:"), "service_tag:")
+	// The classifier tags a source with what it is. Strip all three here, so no
+	// renderer has to remember which prefixes reach it — two of the four stripped
+	// "cidr:" and two did not, which left the invariant undefined.
+	peer := o.Source
+	for _, prefix := range []string{"aws_ec2_managed_prefix_list:", "service_tag:", "cidr:"} {
+		peer = strings.TrimPrefix(peer, prefix)
+	}
 
 	var out []fwRule
 

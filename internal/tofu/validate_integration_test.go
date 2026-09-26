@@ -46,6 +46,16 @@ func TestValidateAgainstRealProviders(t *testing.T) {
 		// differs per cloud — an EIP association, a NIC argument, an access_config
 		// block — and only the real tool proves each of those arguments exists.
 		{"everytype-static", staticEverywhere()},
+		// A rule against every firewalled type, not just the ones the seed chart
+		// happens to connect. Seed touches an EC2, an RDS, an ALB and a droplet;
+		// the Azure and GCP firewall emitters were never reached at all, and a
+		// firewall emitter that names a companion the type does not declare
+		// produces a dangling reference that only the real tool catches.
+		{"everytype-firewalled", firewalledEverywhere()},
+		// Every Ansible host with no public address, so the inventory falls back to
+		// the private one. The private address attributes are references like any
+		// other — a wrong name is caught here and nowhere else.
+		{"ansible-private", ansiblePrivateEverywhere()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hcl, _ := generate(t, tc.session)
@@ -152,6 +162,52 @@ func staticEverywhere() model.Session {
 	return s
 }
 
+// firewalledEverywhere draws one inbound connection from the internet to every
+// NetFirewalled asset, so each provider's firewall emitter runs against each of
+// its own firewalled types rather than only the ones the seed chart uses.
+func firewalledEverywhere() model.Session {
+	s := model.EveryType()
+	for i := range s.Accounts {
+		acc := &s.Accounts[i]
+		for j := range acc.Assets {
+			a := &acc.Assets[j]
+			rt, ok := catalog.Type(acc.Provider, a.Code)
+			if !ok || rt.Network != catalog.NetFirewalled {
+				continue
+			}
+			s.Connections = append(s.Connections, model.Connection{
+				ID: "conn_" + acc.ID + "_" + a.ID,
+				A:  model.NodeRef{Type: model.NodeInternet},
+				B:  model.NodeRef{Type: model.NodeAsset, AccountID: acc.ID, AssetID: a.ID},
+				AToB: []model.Rule{
+					{Protocol: "TCP", Port: "443", Detail: "inbound from anywhere"},
+				},
+			})
+		}
+	}
+	return s
+}
+
+// ansiblePrivateEverywhere turns Ansible on for every type that supports it and
+// leaves every public address off, which is what puts PrivateAddressAttr into the
+// generated inventory.
+func ansiblePrivateEverywhere() model.Session {
+	s := model.EveryType()
+	for i := range s.Accounts {
+		acc := &s.Accounts[i]
+		for j := range acc.Assets {
+			a := &acc.Assets[j]
+			rt, ok := catalog.Type(acc.Provider, a.Code)
+			if !ok || rt.PrivateAddressAttr == "" {
+				continue
+			}
+			a.Params[catalog.ParamAnsible] = true
+			a.Params[catalog.ParamAnsibleGroup] = "web"
+		}
+	}
+	return s
+}
+
 // A chart with Ansible hosts must validate: the key pair companions, the metadata
 // map on GCP, and the lifecycle preconditions are all new shapes that only the
 // real tool checks.
@@ -229,5 +285,49 @@ func TestAMIFiltersResolve(t *testing.T) {
 					p.Owner, p.Filter, region)
 			}
 		})
+	}
+}
+
+// The other check `tofu validate` cannot do.
+//
+// A region reaches HCL verbatim as the provider's region, and nothing in the
+// provider schema knows which strings are real — a wrong one fails at plan. The
+// list was written from Google's published cloud IP range file rather than from
+// memory, which is the same discipline the AMI presets use, but only the API can
+// confirm an account may actually create resources in each one.
+//
+// Skips without gcloud or credentials, so a green run in an environment without
+// them means nothing.
+func TestGCPRegionsResolve(t *testing.T) {
+	if _, err := exec.LookPath("gcloud"); err != nil {
+		t.Skip("gcloud not installed")
+	}
+	out, err := exec.Command("gcloud", "compute", "regions", "list",
+		"--format=value(name)").Output()
+	if err != nil {
+		t.Skip("no GCP credentials available")
+	}
+	live := map[string]bool{}
+	for _, name := range strings.Fields(string(out)) {
+		live[name] = true
+	}
+	if len(live) == 0 {
+		t.Skip("gcloud returned no regions")
+	}
+
+	p, ok := catalog.Get("gcp")
+	if !ok {
+		t.Fatal("no gcp provider registered")
+	}
+	for _, f := range p.AccountParams {
+		if f.Key != catalog.ParamRegion {
+			continue
+		}
+		for _, region := range f.Options {
+			if !live[region] {
+				t.Errorf("%s is offered in the picker but this account cannot use it — "+
+					"a chart choosing it fails at plan", region)
+			}
+		}
 	}
 }

@@ -17,8 +17,14 @@ func Generate(s model.Session) (string, []string) {
 	report := Classify(s)
 	w := &writer{}
 
+	// The inventory is resolved once: what it contains decides both whether the
+	// local provider is required and whether the resource is emitted, and when
+	// those were computed separately the only thing keeping them honest was a
+	// panic comparing them.
+	groups, hosts := inventory(s)
+
 	header(w)
-	requiredProviders(w, s, featureProviders(s))
+	requiredProviders(w, s, featureProviders(groups))
 
 	// Rules are accumulated per account and rendered after the resources, because
 	// DigitalOcean needs all of an asset's rules in one resource.
@@ -28,11 +34,12 @@ func Generate(s model.Session) (string, []string) {
 			firewalls[acc.ID] = fw
 		}
 	}
-	for _, k := range dedupeRules(report, firewalls) {
+	rules := dedupeRules(report, firewalls)
+	for _, k := range rules {
 		firewalls[k.owner].add(k.rule)
 	}
 
-	guarded := guardedAssets(report)
+	guarded := guardedAssets(rules)
 	vars := newVarSet()
 	renderKeyLocals(w, s)
 	// The key variables exist only where something references them, so a chart
@@ -64,7 +71,7 @@ func Generate(s model.Session) (string, []string) {
 			assetResource(w, p, acc, a, guarded[a.ID], vars)
 		}
 		if fw := firewalls[acc.ID]; fw != nil {
-			fw.render(w, acc.ID)
+			fw.render(w, acc)
 		}
 	}
 
@@ -79,11 +86,7 @@ func Generate(s model.Session) (string, []string) {
 		}
 	}
 
-	if needsLocal := renderInventory(w, s); needsLocal != (len(featureProviders(s)) > 0) {
-		// A local_file with no provider declared, or the reverse. Both are broken,
-		// and they are computed from the same source so they cannot disagree.
-		panic("inventory and its provider requirement disagree")
-	}
+	renderInventory(w, groups, hosts)
 
 	vars.render(w)
 	externalIPs(w, s)
@@ -92,6 +95,7 @@ func Generate(s model.Session) (string, []string) {
 
 	warnings := append(report.Warnings(), ansibleWarnings(s, report)...)
 	warnings = append(warnings, unreachableWarnings(report)...)
+	warnings = append(warnings, accountSettingWarnings(s)...)
 	return w.String(), append(warnings, blankChoiceWarnings(s)...)
 }
 
@@ -121,8 +125,8 @@ func header(w *writer) {
 // featureProviders are providers a chart never mentions but a feature needs. The
 // inventory is a local_file, so an Ansible chart requires hashicorp/local even
 // though no account is a "local" account.
-func featureProviders(s model.Session) []catalog.Provider {
-	if groups, _ := inventory(s); len(groups) == 0 {
+func featureProviders(groups []string) []catalog.Provider {
+	if len(groups) == 0 {
 		return nil
 	}
 	return []catalog.Provider{{
@@ -171,11 +175,18 @@ func providerBlock(w *writer, p catalog.Provider, acc model.Account, vars *varSe
 	}
 	w.block(fmt.Sprintf("provider %q", p.TofuLocalName), func() { node.render(w) })
 	for _, v := range p.Variables {
+		def := expand(v.Default, ctx)
+		// A value the chart carries becomes the variable's default, so it is
+		// declared once and can still be overridden per apply with TF_VAR.
+		if v.DefaultFromParam != "" {
+			if got := p.AccountParam(acc.Params, v.DefaultFromParam); got != "" {
+				def = quote(got)
+			}
+		}
 		vars.add(varDecl{
 			Name:        expand(v.Name, ctx),
 			Description: v.Description,
-			Type:        v.Type,
-			Default:     expand(v.Default, ctx),
+			Default:     def,
 			Sensitive:   v.Sensitive,
 		})
 	}
@@ -187,117 +198,6 @@ func providerBlock(w *writer, p catalog.Provider, acc model.Account, vars *varSe
 		w.arg("type", "string")
 		w.arg("default", quote(p.Region(acc.Params)))
 	})
-}
-
-// scaffold emits the network each provider needs before anything can be attached
-// to it. Minimal by design: a chart says nothing about subnetting.
-func scaffold(w *writer, provider, accountID string) {
-	local := accountID
-	switch provider {
-	case "aws":
-		w.blank()
-		w.block(fmt.Sprintf("data %q %q", "aws_availability_zones", local), func() {
-			w.arg("provider", "aws."+local)
-			w.arg("state", quote("available"))
-		})
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "aws_vpc", local), func() {
-			w.arg("provider", "aws."+local)
-			w.arg("cidr_block", quote("10.0.0.0/16"))
-		})
-		// Two subnets in different zones: a DB subnet group requires two, and so
-		// does an application load balancer.
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "aws_subnet", local), func() {
-			w.arg("provider", "aws."+local)
-			w.arg("vpc_id", fmt.Sprintf("aws_vpc.%s.id", local))
-			w.arg("cidr_block", quote("10.0.1.0/24"))
-			w.arg("availability_zone", fmt.Sprintf("data.aws_availability_zones.%s.names[0]", local))
-		})
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "aws_subnet", local+"_b"), func() {
-			w.arg("provider", "aws."+local)
-			w.arg("vpc_id", fmt.Sprintf("aws_vpc.%s.id", local))
-			w.arg("cidr_block", quote("10.0.2.0/24"))
-			w.arg("availability_zone", fmt.Sprintf("data.aws_availability_zones.%s.names[1]", local))
-		})
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "aws_internet_gateway", local), func() {
-			w.arg("provider", "aws."+local)
-			w.arg("vpc_id", fmt.Sprintf("aws_vpc.%s.id", local))
-		})
-		// A gateway with nothing routed to it is a gateway that does nothing. Without
-		// this table both subnets are private: an instance can hold a public IP and
-		// allow port 22 and still be unreachable, because the reply has no way out.
-		//
-		// An inline route rather than a separate aws_route resource: one resource
-		// instead of two, and the inline form is authoritative, so nothing can add a
-		// route behind the chart's back.
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "aws_route_table", local), func() {
-			w.arg("provider", "aws."+local)
-			w.arg("vpc_id", fmt.Sprintf("aws_vpc.%s.id", local))
-			w.block("route", func() {
-				w.arg("cidr_block", quote("0.0.0.0/0"))
-				w.arg("gateway_id", fmt.Sprintf("aws_internet_gateway.%s.id", local))
-			})
-		})
-		// Both subnets, because an asset may land in either and a load balancer
-		// spans both. A subnet left unassociated falls back to the VPC's main route
-		// table, which has no gateway route — reachable or not by accident.
-		for _, subnet := range []string{local, local + "_b"} {
-			w.blank()
-			w.block(fmt.Sprintf("resource %q %q", "aws_route_table_association", subnet), func() {
-				w.arg("provider", "aws."+local)
-				w.arg("subnet_id", fmt.Sprintf("aws_subnet.%s.id", subnet))
-				w.arg("route_table_id", fmt.Sprintf("aws_route_table.%s.id", local))
-			})
-		}
-	case "azure":
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "azurerm_resource_group", local), func() {
-			w.arg("provider", "azurerm."+local)
-			w.arg("name", quote(local))
-			w.arg("location", "var."+local+"_region")
-		})
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "azurerm_virtual_network", local), func() {
-			w.arg("provider", "azurerm."+local)
-			w.arg("name", quote(local))
-			w.arg("address_space", fmt.Sprintf("[%s]", quote("10.0.0.0/16")))
-			w.arg("location", fmt.Sprintf("azurerm_resource_group.%s.location", local))
-			w.arg("resource_group_name", fmt.Sprintf("azurerm_resource_group.%s.name", local))
-		})
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "azurerm_subnet", local), func() {
-			w.arg("provider", "azurerm."+local)
-			w.arg("name", quote(local))
-			w.arg("resource_group_name", fmt.Sprintf("azurerm_resource_group.%s.name", local))
-			w.arg("virtual_network_name", fmt.Sprintf("azurerm_virtual_network.%s.name", local))
-			w.arg("address_prefixes", fmt.Sprintf("[%s]", quote("10.0.1.0/24")))
-		})
-	case "gcp":
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "google_compute_network", local), func() {
-			w.arg("provider", "google."+local)
-			w.arg("name", quote(dashed(local)))
-			w.arg("auto_create_subnetworks", "false")
-		})
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "google_compute_subnetwork", local), func() {
-			w.arg("provider", "google."+local)
-			w.arg("name", quote(dashed(local)))
-			w.arg("ip_cidr_range", quote("10.0.1.0/24"))
-			w.arg("region", "var."+local+"_region")
-			w.arg("network", fmt.Sprintf("google_compute_network.%s.id", local))
-		})
-	case "digitalocean":
-		w.blank()
-		w.block(fmt.Sprintf("resource %q %q", "digitalocean_vpc", local), func() {
-			w.arg("name", quote(dashed(local)))
-			w.arg("region", "var."+local+"_region")
-		})
-	}
 }
 
 // assetResource emits one asset, its fixed arguments and its companions. The
@@ -351,13 +251,12 @@ func assetResource(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 		keyPrecondition(root, acc, &a)
 	}
 	if guarded {
-		attach(root, acc, a, rt)
+		attach(root, a, rt)
 	}
 	for _, v := range rt.Variables {
 		vars.add(varDecl{
 			Name:        expand(v.Name, ctx),
 			Description: v.Description,
-			Type:        v.Type,
 			Default:     expand(v.Default, ctx),
 			Sensitive:   v.Sensitive,
 		})
@@ -477,21 +376,10 @@ func mergeComments(existing, add string) string {
 	return existing + "; also " + add
 }
 
-// required reports whether a conditional Fixed, Companion or ParamField applies.
-//
-// An empty param always applies. With a value, the named directive must equal it,
-// which is how several companions share one select and only the chosen one is
-// emitted. Without, the directive is a boolean that must be on.
+// required reports whether a gated argument, fixed value or companion applies to
+// this asset. catalog.GateOpen is the definition; the drawer reads the same one.
 func required(param, value string, a model.Asset) bool {
-	if param == "" {
-		return true
-	}
-	if value != "" {
-		got, _ := a.Params[param].(string)
-		return got == value
-	}
-	on, _ := a.Params[param].(bool)
-	return on
+	return catalog.GateOpen(param, value, a.Params)
 }
 
 // wrapped renders a param value, applying the type's Wrap expression when it has
@@ -507,14 +395,14 @@ func wrapped(f catalog.ParamField, v any) string {
 
 // guardedAssets is the set of assets that ended up with at least one firewall
 // rule, and therefore need the rule attached to them.
-func guardedAssets(r Report) map[string]bool {
+//
+// It reads the rules that were actually emitted rather than walking the report a
+// second time. The two loops were identical except that this one counted rules
+// whose account has no firewall, which nothing emits.
+func guardedAssets(rules []ownedRule) map[string]bool {
 	out := map[string]bool{}
-	for _, f := range r.Flows {
-		for _, o := range f.Outcomes {
-			for _, rule := range fwRulesFor(f, o) {
-				out[rule.Asset] = true
-			}
-		}
+	for _, r := range rules {
+		out[r.rule.Asset] = true
 	}
 	return out
 }
@@ -528,20 +416,42 @@ func guardedAssets(r Report) map[string]bool {
 // Azure is handled in the firewall emitter instead: a security group attaches to a
 // network interface there, not to the machine. attachmentGaps() still names every
 // asset that nothing wires up, so the output never pretends to be complete.
-func attach(n *blockNode, acc model.Account, a model.Asset, rt catalog.ResourceType) {
+func attach(n *blockNode, a model.Asset, rt catalog.ResourceType) {
+	if block, key, expr, ok := attachArg(a, rt); ok {
+		n.add(block, key, expr)
+	}
+}
+
+// attachArg is the argument an asset uses to name its own firewall, and the
+// expression to write into it.
+//
+// This is the only list of which types can be wired, and attached() reads it too
+// — there used to be a second copy in attachmentGaps(), which meant adding a type
+// here and forgetting there printed "attach its firewall yourself" about
+// something that was already attached.
+func attachArg(a model.Asset, rt catalog.ResourceType) (block, key, expr string, ok bool) {
 	sg := fmt.Sprintf("[aws_security_group.%s.id]", a.ID)
 	switch rt.TofuType {
 	case "aws_instance", "aws_db_instance":
-		n.add("", "vpc_security_group_ids", sg)
+		return "", "vpc_security_group_ids", sg, true
 	case "aws_lb":
-		n.add("", "security_groups", sg)
+		return "", "security_groups", sg, true
 	case "aws_ecs_service":
 		// A Fargate service takes its security groups inside the network block.
-		n.add("network_configuration", "security_groups", sg)
+		return "network_configuration", "security_groups", sg, true
 	case "google_compute_instance":
 		// GCP firewall rules select instances by network tag rather than by group.
-		n.add("", "tags", fmt.Sprintf("[%s]", quote(gcpTag(a.ID))))
+		return "", "tags", fmt.Sprintf("[%s]", quote(dashed(a.ID))), true
 	}
+	return "", "", "", false
+}
+
+// attached reports whether anything at all wires this type to a firewall, in
+// either direction: the resource naming its firewall, or the firewall naming the
+// resource.
+func attached(a model.Asset, rt catalog.ResourceType) bool {
+	_, _, _, ok := attachArg(a, rt)
+	return ok || rt.FirewallRef != ""
 }
 
 // displayName records the chart's label on the resource without letting it affect
@@ -573,7 +483,7 @@ func staticAddress(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	if rt.StaticAddr == nil {
 		return
 	}
-	if on, _ := a.Params[catalog.ParamStaticPublicIP].(bool); !on {
+	if !staticEnabled(&a) {
 		return
 	}
 	w.blank()
@@ -609,49 +519,6 @@ func staticAddress(w *writer, p catalog.Provider, acc model.Account, a model.Ass
 	}
 }
 
-// externalIPs records the hardcoded addresses a chart uses. Nothing is created for
-// them — they only supply a CIDR to the rules above.
-func externalIPs(w *writer, s model.Session) {
-	if len(s.ExternalIPs) == 0 {
-		return
-	}
-	w.blank()
-	w.line("# Hardcoded addresses. Not managed here — their CIDRs appear in the rules above.")
-	for _, e := range s.ExternalIPs {
-		w.line("#   %s — %s", e.Label, e.IP)
-	}
-}
-
-// notes records the connections that produced no rule, in the file itself. Someone
-// reading the configuration later has no access to the UI warnings.
-func notes(w *writer, r Report) {
-	var lines []string
-	for _, f := range r.Flows {
-		for _, o := range f.Outcomes {
-			if o.Strategy == StratCIDR || o.Strategy == StratSecurityGroupRef || o.Strategy == StratEdgeNative {
-				continue
-			}
-			lines = append(lines, fmt.Sprintf("#   %s → %s (%s/%s): %s",
-				f.From.Label, f.To.Label, o.Rule.Protocol, portOrAny(o.Rule.Port), o.Reason))
-		}
-	}
-	if len(lines) == 0 {
-		return
-	}
-	w.blank()
-	w.line("# Declared connections that produced no firewall rule:")
-	for _, l := range lines {
-		w.line("%s", l)
-	}
-}
-
-func portOrAny(p string) string {
-	if p == "" {
-		return "(unset)"
-	}
-	return p
-}
-
 // ruleOwner is the account whose firewall a rule belongs to: the account of the
 // asset it attaches to.
 func ruleOwner(f Flow, r fwRule) string {
@@ -667,116 +534,4 @@ func ruleOwner(f Flow, r fwRule) string {
 // DigitalOcean require for resource names.
 func dashed(s string) string {
 	return strings.ReplaceAll(strings.ToLower(s), "_", "-")
-}
-
-// attachmentGaps lists assets whose firewall could not be wired to them here.
-// Azure attaches a security group to a network interface or a subnet, and a chart
-// does not describe either, so those associations are left to the user.
-func attachmentGaps(w *writer, s model.Session, guarded map[string]bool) {
-	var lines []string
-	for _, acc := range s.Accounts {
-		for _, a := range acc.Assets {
-			if !guarded[a.ID] {
-				continue
-			}
-			rt, ok := catalog.Type(acc.Provider, a.Code)
-			if !ok {
-				continue
-			}
-			switch rt.TofuType {
-			case "aws_instance", "aws_db_instance", "aws_lb", "aws_ecs_service",
-				"google_compute_instance", "digitalocean_droplet",
-				"azurerm_linux_virtual_machine":
-				continue
-			}
-			lines = append(lines, fmt.Sprintf("#   %s (%s) — attach its firewall yourself", a.Name, rt.TofuType))
-		}
-	}
-	if len(lines) == 0 {
-		return
-	}
-	w.blank()
-	w.line("# Rules were generated for these, but nothing here attaches them:")
-	for _, l := range lines {
-		w.line("%s", l)
-	}
-}
-
-// blankChoiceWarnings reports a field the chart opted into and then left empty.
-//
-// Choosing "Custom AMI ID" and typing nothing is the case this exists for: it
-// reaches generation as ami = "", a resource that looks complete and cannot
-// launch. Blank is accepted while editing so the drawer still renders, then
-// refused here — the same treatment a blank port gets.
-//
-// The rule is deliberately about the gate rather than about any particular field.
-// An ungated field left blank is absence, and has a default behind it; a gated one
-// is a question the user chose to be asked and did not answer.
-func blankChoiceWarnings(s model.Session) []string {
-	var out []string
-	for _, acc := range s.Accounts {
-		for _, a := range acc.Assets {
-			rt, ok := catalog.Type(acc.Provider, a.Code)
-			if !ok {
-				continue
-			}
-			for _, f := range rt.Arguments() {
-				if f.RequiresValue == "" || !required(f.RequiresParam, f.RequiresValue, a) {
-					continue
-				}
-				v, isText := a.Params[f.ParamKey()].(string)
-				if !isText || strings.TrimSpace(v) != "" {
-					continue
-				}
-				out = append(out, fmt.Sprintf(
-					"%s → %s chose %q but left %s empty — enter a value, or pick a different option",
-					acc.Name, a.Name, f.RequiresValue, f.Label))
-			}
-		}
-	}
-	return out
-}
-
-// unreachableWarnings reports an asset that is allowed inbound from outside its
-// own network but has no address anything out there could reach.
-//
-// A firewall rule permits traffic; it does not deliver it. An instance with no
-// public address and a rule allowing port 22 generates cleanly, applies cleanly,
-// and cannot be connected to — the failure looks like a firewall problem and is
-// not one.
-//
-// Only traffic from outside the account needs a public address. A same-account
-// peer resolves to a security group reference over private addressing, so
-// warning about it would be a false alarm on the most common case of all.
-func unreachableWarnings(r Report) []string {
-	var out []string
-	for _, f := range r.Flows {
-		if f.To.Asset == nil || f.To.Account == nil || f.To.Type.Network != catalog.NetFirewalled {
-			continue
-		}
-		// The internet and a hardcoded address are outside by definition; an asset
-		// is outside when it sits in another account, because the two VPCs have no
-		// private path between them.
-		external := f.From.Ref.Type != model.NodeAsset ||
-			f.From.Account == nil || f.From.Account.ID != f.To.Account.ID
-		if !external {
-			continue
-		}
-		// A refused outcome emits nothing, so it grants no access to warn about.
-		grants := false
-		for _, o := range f.Outcomes {
-			if o.Strategy != StratRefused {
-				grants = true
-				break
-			}
-		}
-		if !grants {
-			continue
-		}
-		if reason := noPublicAddress(f.To.Type, f.To.Asset); reason != "" {
-			out = append(out, fmt.Sprintf("%s → %s is allowed inbound from %s, but %s",
-				f.To.Account.Name, f.To.Asset.Name, f.From.Label, reason))
-		}
-	}
-	return out
 }

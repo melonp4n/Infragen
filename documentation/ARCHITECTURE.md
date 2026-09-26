@@ -49,7 +49,7 @@ POST /api/validate         session in, `init` + `validate` verdict out
 
 ### IDs
 
-The server mints IDs for accounts, assets and external IPs (`crypto/rand`, 8 bytes hex).
+The server mints IDs for accounts, assets and external IPs (`crypto/rand.Text()`).
 The browser reads the new ID back off the fragment it just inserted — the ID is already in
 `data-asset-id` and friends, so no extra plumbing is needed.
 

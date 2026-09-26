@@ -18,18 +18,37 @@ func init() {
 			{Key: "region", Expr: "{{region}}"},
 			{Key: "project", Expr: "var.{{account}}_project"},
 		},
+		// Every region Google publishes in its own cloud IP range file, sorted by
+		// code so the geographic prefixes group themselves. Written from that
+		// published list rather than from memory — see TOFU-MAPPING.md, and
+		// TestGCPRegionsResolve for the check tofu validate cannot do.
 		AccountParams: AccountSettings([]string{
-			"europe-west1", "europe-west2", "europe-west4", "us-central1", "us-east1", "asia-southeast1",
-		}, "europe-west2"),
+			"africa-south1", "asia-east1", "asia-east2", "asia-northeast1",
+			"asia-northeast2", "asia-northeast3", "asia-south1", "asia-south2",
+			"asia-southeast1", "asia-southeast2", "asia-southeast3", "australia-southeast1",
+			"australia-southeast2", "europe-central2", "europe-north1", "europe-north2",
+			"europe-southwest1", "europe-west1", "europe-west10", "europe-west12",
+			"europe-west15", "europe-west2", "europe-west3", "europe-west4",
+			"europe-west6", "europe-west8", "europe-west9", "me-central1",
+			"me-central2", "me-west1", "northamerica-northeast1", "northamerica-northeast2",
+			"northamerica-south1", "southamerica-east1", "southamerica-west1", "us-central1",
+			"us-central2", "us-east1", "us-east4", "us-east5",
+			"us-east7", "us-south1", "us-west1", "us-west2",
+			"us-west3", "us-west4", "us-west8",
+		}, "europe-west2", ParamField{
+			Key: ParamProject, Label: "Project ID", Type: FieldText, Default: "", Directive: true,
+		}),
 		Variables: []Variable{{
 			Name: "{{account}}_project", Description: "GCP project ID", Default: `"my-project"`,
+			DefaultFromParam: ParamProject,
 		}},
 		Types: []ResourceType{
 			{
 				Code: "GCE", Name: "Compute engine", TofuType: "google_compute_instance",
 				Network: NetFirewalled, AddressKind: AddrEphemeralIP,
-				AddressAttr: "network_interface[0].access_config[0].nat_ip",
-				StaticAddr:  &StaticAddress{TofuType: "google_compute_address", Attr: "address"},
+				AddressAttr:        "network_interface[0].access_config[0].nat_ip",
+				PrivateAddressAttr: "network_interface[0].network_ip",
+				StaticAddr:         &StaticAddress{TofuType: "google_compute_address", Attr: "address"},
 				// No access_config means no public address at all, and the attribute
 				// above would index a block that does not exist.
 				AddressRequires: ParamStaticPublicIP,

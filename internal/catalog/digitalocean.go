@@ -22,6 +22,9 @@ func init() {
 			{
 				Code: "DRP", Name: "Droplet", TofuType: "digitalocean_droplet",
 				Network: NetFirewalled, AddressAttr: "ipv4_address", AddressKind: AddrStaticIP,
+				PrivateAddressAttr: "ipv4_address_private",
+				// A digitalocean_firewall attaches to droplets and nothing else.
+				FirewallRef: "digitalocean_droplet.{{asset}}.id",
 				Fixed: []Fixed{
 					{Key: "vpc_uuid", Expr: "digitalocean_vpc.{{account}}.id"},
 				},
