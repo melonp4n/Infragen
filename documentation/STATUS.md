@@ -51,11 +51,10 @@ Where the build has got to, so a new session can pick up without re-reading ever
   Internet→CDN connection reports "publicly reachable", and EC2→Internet reports "outbound
   only".
 
-## Not done
+## History — how `internal/tofu` was built
 
-- **`/api/generate` and `internal/tofu`.** The Generate config button has no handler and no
-  generator exists. **The design is settled** — see `TOFU-MAPPING.md`, which now records the
-  decisions rather than an open question. Remaining steps, in order:
+Kept because the reasoning is worth having; everything below is **done**. See `TOFU-MAPPING.md`
+for the decisions in their settled form.
 
   1. ~~Add the network classification fields to `catalog.ResourceType` and set them across the
      four provider files.~~ **Done.** `Network`, `AddressAttr`, `AddressKind` and `StaticAddr`,
@@ -359,6 +358,117 @@ would justify revisiting is denying a specific CIDR, which security groups canno
 **What this does not prove.** `tofu validate` confirms `aws_route_table`, its nested `route` block
 and `aws_route_table_association` are real arguments — it cannot confirm traffic flows. Only an
 apply and a connection do that. The honest claim is that the missing route is now emitted.
+
+## Done — cleanup pass, and six firewalls that named resources that did not exist
+
+A fresh-eyes review of the whole codebase. The report is at
+`~/.claude/plans/this-poc-is-going-luminous-hinton.md`.
+
+**Three generation bugs, all found by one new fixture.** `everytype-firewalled` draws an inbound
+connection to every `NetFirewalled` type, because the existing fixtures did not: `EveryType()` has
+no connections at all, and `Seed()`'s eight never touch an Azure VM or a DigitalOcean managed
+database — so the Azure and GCP firewall emitters were never exercised by the acceptance gate.
+
+| Bug | State |
+|---|---|
+| Azure emitted a NIC association for every firewalled asset; only `VM` has a NIC. `SQL`, `AKS`, `APG` produced a dangling reference | **fixed** — `ResourceType.FirewallRef`, empty means nothing attaches |
+| DigitalOcean hardcoded `droplet_ids`; `DB`, `K8S` and `LB` are not droplets | **fixed** — same mechanism |
+| DigitalOcean emitted `protocol = "all"`, which the provider rejects at apply | **fixed** — an `ALL` rule becomes tcp, udp and icmp |
+| `attachmentGaps()` kept a second copy of `attach()`'s type list, and switched on `TofuType` outside the two places the rule permits | **fixed** — `attached()` reads `attachArg()` |
+
+Two UI bugs, both one line: a stray `</style>` in `app.css` had been swallowing
+`.account-dot{background:var(--p)}` since the port from the prototype, so account dots rendered
+unfilled; and `openTypeMenu` moved the menu into `#canvas`, where the next import destroyed it.
+
+**Removed:** `report.go` (50 lines, `Report.Text()` had no callers), `resourceName()` (the identity
+function), `textError` (a hand-rolled `errors.New`), `orDefault`, `Variable.Type` and `varDecl.Type`
+(never anything but string), the nil-regions branch in `AccountSettings`, `nodeLabel()` in `app.js`,
+three dead CSS rules, and the client-side param default seeding — which was keyed by `key` where Go
+keys by `ParamKey()`, and which `Normalise` redoes on every round trip anyway.
+
+**Single-sourced:** `catalog.GateOpen` (the drawer and the generator each had a copy, and the Go
+comment said so), `producesRule` (the strategy partition was written twice, inverted, in two files),
+`boolParam`, `dashed`, `ports`, `lowerProto`, `portOrAny`, and the `cidr:` prefix, which two of four
+renderers stripped and two did not.
+
+**Split:** `firewall.go` into one file per provider — the README's own to-do — and `emit.go` into
+`emit.go`, `scaffold.go` and `warnings.go`. `emit.go` went from 782 lines to 528.
+
+**Performance:** `updateLines()` now coalesces to one redraw per animation frame and reads every
+connector position before writing any SVG. It previously ran on every mousemove, forcing a layout
+recalculation per connection per event.
+
+`inventory(s)` is computed once per generate rather than three times, which removed the `panic()`
+that existed only to check the three results agreed — in a function called straight from an HTTP
+handler with no recover.
+
+**Not done: `app.js` is still one file.** Splitting it into modules means converting shared mutable
+closure state — `state`, `selection`, `zoom`, `connectFrom`, `linesLayer` — into module state with
+accessors, which is more code than it removes, and there is no JavaScript test suite to catch a
+mistake. Worth doing with a browser open, as a design change rather than a cleanup.
+
+## Done — every GCP region, and the project as an account setting
+
+Two gaps in the GCP account panel.
+
+**The region list held six of 47.** It now carries every region in Google's published cloud IP range
+file (`https://www.gstatic.com/ipranges/cloud.json`, whose `scope` field is the region name), sorted
+by code. Written from that published list rather than from memory, which is the discipline the AMI
+presets settled on. `TestGCPRegionsResolve` compares the picker against `gcloud compute regions list`
+and skips without credentials — the check `tofu validate` cannot do, because nothing in a provider
+schema knows which region strings are real.
+
+That file lists regions Google operates, not regions every account may deploy into; some need
+allowlisting, the same caveat the opt-in AWS regions carry.
+
+**There was nowhere to set the project.** `var.<account>_project` defaulted to `"my-project"` — the
+region-specific-AMI problem again, a plausible value wrong for everyone. The project is now a text
+field on the account and its value becomes the variable's default, so `-var` and `TF_VAR` still
+override per apply. Blank keeps the old fallback and produces a warning naming the field.
+
+| Change | State |
+|---|---|
+| `AccountSettings(regions, default, extra...)` — per-cloud settings between region and keys | **done** |
+| `Provider.AccountParam(params, key)`; `Region` is now a wrapper on it | **done** |
+| `Variable.DefaultFromParam`, honoured in `providerBlock` | **done** |
+| `accountSettingWarnings` — blank param behind a placeholder default | **done** |
+| `TestGCPProjectReachesTheVariable`, `TestBlankGCPProjectIsWarnedAbout` | **done** |
+| `TestGCPRegionsResolve` | **written, skips without gcloud** |
+
+Golden files did not move: a blank project resolves to the same `"my-project"` the variable always
+defaulted to.
+
+## Done — the inventory carries private addresses too
+
+Reported against the GCP work: the generated inventory held only public IPs.
+
+Every host now gets both. The public address stays the line Ansible connects to, because that is
+where infrachart is being run from, and the private one sits commented directly beneath it — so
+running Ansible from a bastion inside the network is uncommenting a line rather than looking an
+address up.
+
+```ini
+# GCP Ops → Mythic C2
+${google_compute_address.asset_3.address} ansible_user=ansible
+# ${google_compute_instance.asset_3.network_interface[0].network_ip} ansible_user=ansible
+```
+
+**A host with no public address is now in the inventory instead of missing from it.** It used to be
+dropped: the asset was marked Ansible-managed, the apply succeeded, and the host was simply absent.
+The private address becomes the line itself, the comment says `(private address only)`, and the
+warning says the inventory fell back to it.
+
+| Change | State |
+|---|---|
+| `ResourceType.PrivateAddressAttr`, set on `EC2`, `VM`, `GCE`, `DRP` | **done** |
+| `privateAddress()`; `inventoryHost.Private`; the commented line | **done** |
+| A private-only host is included, labelled, and warned about | **done** |
+| `TestInventoryCarriesBothAddresses`, `TestPrivateOnlyHostIsStillInTheInventory` | **done** |
+| `ansible-private` integration fixture — proves all four attributes are real | **done** |
+
+The attributes are ordinary Terraform references even inside a comment, because `#` means nothing to
+HCL inside a heredoc — so `terraform validate` resolves them and a wrong name fails there. That is
+the only check that could catch one.
 
 ## Deliberately out of scope
 

@@ -69,6 +69,9 @@ nothing more, which is how fifteen invented parameters survived until someone ac
 - **An inventory address and a firewall-rule address are different questions.** A rule persists
   while the address moves, so an ephemeral IP makes it stale. An inventory is rewritten every apply,
   so an ephemeral IP is correct there. Merging the two silently produced no inventory at all.
+  The same split is why `PrivateAddressAttr` exists and is used only by the inventory: a host with
+  no public address belongs in it, reachable from a jump box, while a rule between two assets in one
+  account uses a security group reference rather than any written-down address.
 - **Declare a Terraform variable from the reference, not from the flag that usually implies it.**
   The SSH key variables were declared when Ansible was on, which left a plain Azure VM — which needs
   a key regardless — referencing variables that did not exist.
@@ -115,6 +118,16 @@ nothing more, which is how fifteen invented parameters survived until someone ac
   refused connections. Reachability needs an address, a rule *and* a route. AWS is the only one of
   the four that makes you build the route — and Network ACLs are not the answer to an unreachable
   host, for the reasons in `TOFU-MAPPING.md`.
+- **A firewall that attaches to nothing is worse than no firewall.** Six `NetFirewalled` types had
+  no way to attach one — Azure `SQL`/`AKS`/`APG` have no network interface, DigitalOcean `DB`/`K8S`/
+  `LB` are not droplets — and generation emitted an association naming a resource that was never
+  declared. `ResourceType.FirewallRef` says how a provider's firewall names an asset, and empty
+  means nothing can: emit no firewall and let `attachmentGaps()` report it. There is exactly one
+  list of what can be attached — `attachArg()` — and `attached()` reads it.
+- **A fixture with no connections proves nothing about firewalls.** `EveryType()` has none, and
+  `Seed()` never connects an Azure VM or a DigitalOcean managed database, so two of the four
+  firewall emitters were untouched by the acceptance gate for months. `everytype-firewalled` is the
+  fixture that reaches them.
 - **A toggle that allocates something must also attach it.** Enabling a static public IP on Azure or
   GCP emitted the address resource and a comment saying to wire it up by hand, which is a setting
   that appears to work and does nothing. Attachment is a `Fixed` with `RequiresParam`, and every

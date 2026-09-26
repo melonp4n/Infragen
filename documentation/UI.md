@@ -57,11 +57,26 @@ This uses the CSS `zoom` property rather than `transform: scale()`. `zoom` affec
 the scroll area shrinks with the chart; a transform would leave the scrollbars sized for a
 2200×1500 canvas that is no longer that big on screen.
 
-The cost is that three places have to convert between visual pixels and canvas pixels, because
+The cost is that two places have to convert between visual pixels and canvas pixels, because
 `getBoundingClientRect()` and `event.clientX` report visual pixels while the SVG draws in canvas
-pixels. All three divide by `zoom`: `pointFor()`, the drag deltas in `startDrag()`, and
-`openTypeMenu()`. **Anything new that mixes client coordinates with canvas coordinates has to do
-the same.**
+pixels. Both divide by `zoom`: `pointFor()` and the drag deltas in `startDrag()`. **Anything new
+that mixes client coordinates with canvas coordinates has to do the same.**
+
+The type menu used to be a third. It is `position: fixed` and placed in viewport pixels instead,
+which needs no conversion — and, more importantly, means it is never moved into `#canvas`.
+Reparenting it there left it inside the markup that `importSession()` replaces wholesale, so after
+an import the ✛ tile for that provider silently did nothing.
+
+## Redrawing
+
+`updateLines()` is called from everywhere — every mousemove of a drag, every scroll, every rule
+edit — and does not redraw immediately. It sets a flag and defers to `requestAnimationFrame`, so
+several calls in one frame become one redraw. A 1000 Hz mouse fires far more often than the
+display refreshes, and each redraw reads layout.
+
+`drawLines()` reads **every** connector position before it writes anything. Interleaving the two
+made each `getBoundingClientRect()` force a layout recalculation of the SVG the previous iteration
+had just appended. Keep the reads and the writes in separate passes.
 
 ## Positioning
 

@@ -1,4 +1,4 @@
-M ubuntu:latest
+FROM ubuntu:latest
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive

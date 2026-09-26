@@ -11,8 +11,11 @@ Infragen is a web-application that allows users to build Cloud infrastructure us
 
 This application is written primarily in Go, using templ as a front-end templating engine. Nodes use a generic template, and the content is derived from the resource models listed in /catalog. This has been developed around modularity, allowing additional resources to be supported with minimal refactoring. 
 
-> [!IMPORTANT] 
-> This is currently not the case with the FlowChart -> Tofu logic, which contains a lot of case logic for different providers. This is on the to-do list.
+> [!NOTE]
+> The FlowChart -> Tofu logic used to be the exception, with per-provider case logic spread through
+> one file. Firewall generation is now one file per provider behind a shared interface, and what a
+> firewall attaches to is catalog data rather than a switch. Network scaffolding is still hardcoded
+> per provider in `internal/tofu/scaffold.go`.
 
 The use of models also allows easy import/export to JSON files, with templ handling input sanitisation.
 
@@ -35,9 +38,9 @@ The application defaults to localhost:8080
 
 ## Feature Roadmap
 
-- [ ] Add configuration options to support either init-scripts or integrations with Ansible
+- [x] Add configuration options to support either init-scripts or integrations with Ansible
 - [ ] Add DNS support, integrating with popular Registrars (this will include automated checks for health and reputation)
 - [ ] Add the option to apply the OpenTofu plan and detect configuration drift. This will help with quick teardown/restoration of burnt assets
-- [ ] Clean up /internal/tofu/firewall.go to make it easier to add other providers
+- [x] Clean up /internal/tofu/firewall.go to make it easier to add other providers — one file per provider, shared port/protocol helpers, and attachment declared in the catalog
 - [ ] Refactor the slop out
 

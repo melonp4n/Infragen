@@ -21,8 +21,16 @@ func (w *writer) line(format string, args ...any) {
 	w.raw(fmt.Sprintf(format, args...))
 }
 
+// indents is sliced rather than built per line: raw runs once per line of output,
+// and strings.Repeat allocated a new string every time.
+const indents = "                                "
+
 func (w *writer) raw(s string) {
-	w.b.WriteString(strings.Repeat("  ", w.depth))
+	if n := 2 * w.depth; n <= len(indents) {
+		w.b.WriteString(indents[:n])
+	} else {
+		w.b.WriteString(strings.Repeat("  ", w.depth))
+	}
 	w.b.WriteString(s)
 	w.b.WriteByte('\n')
 }

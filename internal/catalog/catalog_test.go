@@ -321,3 +321,17 @@ func TestRegionOptionsAreCodes(t *testing.T) {
 		}
 	}
 }
+
+// Provider colours are written straight into a <style> block, so they must be
+// literal hex. They are Go constants, which is why this is checked here once
+// rather than on every page render.
+func TestProviderColoursAreHex(t *testing.T) {
+	hex := regexp.MustCompile(`^#[0-9A-Fa-f]{3,8}$`)
+	for _, p := range All() {
+		for label, v := range map[string]string{"Color": p.Color, "Dim": p.Dim} {
+			if !hex.MatchString(v) {
+				t.Errorf("provider %s has %s = %q, which is not a hex colour", p.Key, label, v)
+			}
+		}
+	}
+}

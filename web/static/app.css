@@ -14,7 +14,6 @@
     --danger:#E8574B;
     --danger-dim:#7A2E27;
     --warning:#E3A73D;
-    --warning-dim:#4D3B1C;
     --extip:#9C86E0;
     --extip-dim:#332B57;
     --radius:10px;
@@ -135,7 +134,7 @@
   .add-tile:hover{border-color:var(--accent-dim);color:var(--accent);background:rgba(89,217,199,0.05);}
 
   .type-menu{
-    position:absolute;z-index:60;background:var(--panel-2);border:1px solid var(--border);
+    position:fixed;z-index:60;background:var(--panel-2);border:1px solid var(--border);
     border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,0.5);padding:5px;min-width:170px;
   }
   .type-menu-item{
@@ -201,7 +200,6 @@
   .drawer.hidden{transform:translateX(100%);pointer-events:none;}
   .drawer-head{padding:16px 18px;border-bottom:1px solid var(--border-soft);}
   .drawer-title{display:flex;align-items:center;gap:8px;font-size:13px;font-family:var(--mono);flex-wrap:wrap;}
-  .drawer-title .arrow{color:var(--text-faint);}
   .drawer-flag{margin-top:8px;display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 8px;border-radius:5px;font-family:var(--mono);}
   .drawer-body{flex:1;overflow-y:auto;padding:16px 18px;}
   .rule-section{margin-bottom:22px;}
@@ -278,8 +276,6 @@
   ::-webkit-scrollbar{width:10px;height:10px;}
   ::-webkit-scrollbar-track{background:transparent;}
   ::-webkit-scrollbar-thumb{background:#232B36;border-radius:10px;border:2px solid var(--bg);}
-  .canvas-wrap::-webkit-scrollbar-thumb{border-color:var(--bg);}
-</style>
 
   /* Provider colours arrive as --p / --p-dim on the account element, emitted from
      the Go catalog. Everything provider-tinted reads them, so adding a provider
@@ -353,7 +349,6 @@
 
   /* Validation result. Green and red rather than the teal accent: this is a
      pass/fail verdict, not a piece of chrome. */
-  :root{ --ok:#5BD97A; --ok-dim:#1E3D26; }
   .modal-head-actions{display:flex;align-items:center;gap:10px;}
   .modal-head-actions .toolbtn{padding:5px 10px;font-size:12px;}
   .validate-result{

@@ -7,13 +7,19 @@
       "provider": "aws",
       "x": 574,
       "y": 364,
+      "params": {
+        "region": "eu-west-2",
+        "ssh_public_key": "",
+        "ssh_public_key_file": ""
+      },
       "assets": [
         {
           "id": "asset_80a93a5e88e6adbd",
           "code": "EC2",
           "name": "Mythic C2",
           "params": {
-            "ami": "ami-0c55b159cbfafe1f0",
+            "ami": "",
+            "ami_os": "Amazon Linux 2023",
             "ansible": true,
             "ansible_group": "c2",
             "ansible_user": "ec2-user",
@@ -21,6 +27,8 @@
             "instance_type": "t3.micro",
             "metadata_options.http_tokens": "required",
             "monitoring": false,
+            "pin_ami": false,
+            "root_block_device": true,
             "root_block_device.encrypted": true,
             "root_block_device.volume_size": 20,
             "ssh_public_key": "",
@@ -34,7 +42,8 @@
           "code": "EC2",
           "name": "DNS Redirector",
           "params": {
-            "ami": "ami-0c55b159cbfafe1f0",
+            "ami": "",
+            "ami_os": "Amazon Linux 2023",
             "ansible": true,
             "ansible_group": "dns_redirector",
             "ansible_user": "ec2-user",
@@ -42,6 +51,8 @@
             "instance_type": "t3.micro",
             "metadata_options.http_tokens": "required",
             "monitoring": false,
+            "pin_ami": false,
+            "root_block_device": true,
             "root_block_device.encrypted": true,
             "root_block_device.volume_size": 20,
             "ssh_public_key": "",
@@ -55,7 +66,8 @@
           "code": "EC2",
           "name": "HTTPS Redirector",
           "params": {
-            "ami": "ami-0c55b159cbfafe1f0",
+            "ami": "",
+            "ami_os": "Amazon Linux 2023",
             "ansible": true,
             "ansible_group": "https_redirector",
             "ansible_user": "ec2-user",
@@ -63,6 +75,8 @@
             "instance_type": "t3.micro",
             "metadata_options.http_tokens": "required",
             "monitoring": false,
+            "pin_ami": false,
+            "root_block_device": true,
             "root_block_device.encrypted": true,
             "root_block_device.volume_size": 20,
             "ssh_public_key": "",
@@ -89,6 +103,11 @@
       "provider": "digitalocean",
       "x": 355,
       "y": 137,
+      "params": {
+        "region": "lon1",
+        "ssh_public_key": "",
+        "ssh_public_key_file": ""
+      },
       "assets": [
         {
           "id": "asset_7",
@@ -170,6 +189,11 @@
       "provider": "azure",
       "x": 1044,
       "y": 545,
+      "params": {
+        "region": "uksouth",
+        "ssh_public_key": "",
+        "ssh_public_key_file": ""
+      },
       "assets": [
         {
           "id": "asset_2820f29520596035",

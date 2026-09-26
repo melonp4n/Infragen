@@ -46,7 +46,8 @@ func init() {
 			{
 				Code: "EC2", Name: "EC2 instance", TofuType: "aws_instance",
 				Network: NetFirewalled, AddressAttr: "public_ip", AddressKind: AddrEphemeralIP,
-				StaticAddr: &StaticAddress{TofuType: "aws_eip", Attr: "public_ip"},
+				PrivateAddressAttr: "private_ip",
+				StaticAddr:         &StaticAddress{TofuType: "aws_eip", Attr: "public_ip"},
 				// public_ip is empty on an instance with no public address, which is
 				// the default. Without this the inventory got a blank line.
 				AddressRequires: "associate_public_ip_address",

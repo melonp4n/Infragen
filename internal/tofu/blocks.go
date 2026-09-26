@@ -119,7 +119,6 @@ type varSet struct {
 type varDecl struct {
 	Name        string
 	Description string
-	Type        string
 	Default     string // rendered HCL; never set on a sensitive variable
 	Sensitive   bool
 }
@@ -153,7 +152,9 @@ func (v *varSet) render(w *writer) {
 			if d.Description != "" {
 				w.arg("description", quote(d.Description))
 			}
-			w.arg("type", orDefault(d.Type, "string"))
+			// Every variable a chart produces is a string. A type field existed
+			// for the others and was never set to anything else.
+			w.arg("type", "string")
 			// A sensitive variable must have no default, or the prompt never
 			// happens and whatever was defaulted is what gets used.
 			if d.Default != "" && !d.Sensitive {
@@ -164,13 +165,6 @@ func (v *varSet) render(w *writer) {
 			}
 		})
 	}
-}
-
-func orDefault(v, fallback string) string {
-	if v == "" {
-		return fallback
-	}
-	return v
 }
 
 // addFixed places one catalog Fixed value onto a node. A Fixed with no Key

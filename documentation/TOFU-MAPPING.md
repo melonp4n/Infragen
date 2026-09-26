@@ -228,6 +228,26 @@ appending two strings.
 disabled one fails with an authentication error rather than anything that names the real problem.
 Nothing in the picker marks them, because a select's option is also its stored value.
 
+**GCP offers every region Google publishes**, all 47, taken from Google's own cloud IP range file
+(`https://www.gstatic.com/ipranges/cloud.json`, whose `scope` field is the region) rather than
+written from memory. That file is a list of regions Google operates, not a list every account may
+deploy into — some require allowlisting, exactly like the opt-in AWS regions above, and nothing in
+the picker can mark them because a select's option is also its stored value.
+
+`TestGCPRegionsResolve` in the integration suite is the check `tofu validate` cannot do: it compares
+the picker against `gcloud compute regions list` and fails on any region the account cannot use. It
+skips without gcloud or credentials, so **a green run in an environment without them means nothing**.
+
+### The GCP project is an account setting
+
+Every Google resource needs a project and Google has no account-wide default for one, so the provider
+block has always read `var.<account>_project`. That variable defaulted to `"my-project"`, which is
+the same class of problem as the region-specific AMI: a plausible value that is wrong for everyone.
+
+The project is now a text field on the account, alongside the region, and its value becomes the
+variable's default. The variable remains, so `-var` and `TF_VAR` still override it per apply. Leaving
+it blank keeps the old fallback and produces a warning naming the field.
+
 **A region option must be the bare code.** It reaches HCL verbatim as the provider's region, so a
 friendlier `eu-west-2 (London)` would be stored and emitted as written and fail at plan.
 `TestRegionOptionsAreCodes` enforces that no label characters appear in any provider's list, and
@@ -500,6 +520,37 @@ The four providers do not agree on what a firewall rule attaches to:
 | **GCP** | `google_compute_firewall` | the **VPC network**, targeting by network tag | there is no per-instance group; rules match tags, so assets need generated tags |
 | **DigitalOcean** | `digitalocean_firewall` | droplets by ID or tag | inbound and outbound are lists **inside one resource**, so rules must be accumulated per firewall and emitted once |
 
+### What a firewall can attach to, and what it cannot
+
+A firewall that names a resource the type does not have is worse than no firewall: it fails at
+validate, and before that it reads as protection. The two directions are declared separately
+because they are separate facts:
+
+| Direction | Declared in | Providers |
+|---|---|---|
+| the resource names its firewall | `attachArg()` in `internal/tofu/emit.go` | AWS (`vpc_security_group_ids`, `security_groups`, the nested ECS one), GCP (`tags`) |
+| the firewall names the resource | `ResourceType.FirewallRef` in the catalog | Azure (the NIC companion), DigitalOcean (`droplet_ids`) |
+
+`attached()` is the union, and `attachmentGaps()` reads it — there used to be a second list there,
+so adding a type to one and not the other printed "attach its firewall yourself" about something
+that was already attached.
+
+**Six types are `NetFirewalled` and have no attachment at all**: Azure `SQL`, `AKS` and `APG` have
+no network interface, and DigitalOcean's `DB`, `K8S` and `LB` are not droplets. Generation emitted
+an association naming a resource that was never declared, and every one of them failed
+`terraform validate` the moment a chart drew a single rule to them. They now generate no firewall
+and are reported instead.
+
+Giving them real protection is a feature, not a fix, and each is a different mechanism:
+`azurerm_mssql_firewall_rule` on the server, an NSG on the AKS node subnet, an NSG on the App
+Gateway's own subnet, `digitalocean_database_firewall` trusted sources, node-pool tags for
+Kubernetes, and nothing at all for a DigitalOcean load balancer.
+
+**DigitalOcean has no "every protocol" value.** A `digitalocean_firewall` rule takes `tcp`, `udp`
+or `icmp`, so an `ALL` rule becomes all three. It used to emit `protocol = "all"`, which the
+provider rejects at apply and `validate` never sees, because the provider checks the value rather
+than the schema.
+
 The DigitalOcean shape is the one that breaks a naive design: you cannot emit one HCL block per
 rule. Whatever interface the emitters use must let a provider accumulate rules and emit at the
 end. Design for that from the start.
@@ -644,6 +695,41 @@ resource "local_file" "ansible_inventory" {
 ```
 
 A `.gitignore` covering the inventory and the state file is emitted alongside.
+
+### Both addresses, because the inventory cannot know where Ansible runs
+
+A host usually has two addresses and the inventory carries both: the public one as the line Ansible
+connects to, and the private one commented directly beneath it.
+
+```ini
+# AWS Account 1 → Mythic C2
+${aws_eip.asset_3.public_ip} ansible_user=ec2-user
+# ${aws_instance.asset_3.private_ip} ansible_user=ec2-user
+```
+
+Running Ansible from a bastion inside the VPC is then uncommenting one line, not looking an address
+up. The public one is the default because that is where infrachart itself is being run from.
+
+`ResourceType.PrivateAddressAttr` names the attribute, and it needs neither an `AddressKind` nor an
+`AddressRequires` gate: a machine in a VPC always has a private address, where a public one exists
+only if something was switched on to give it one.
+
+| Type | Private attribute |
+|---|---|
+| `aws_instance` | `private_ip` |
+| `azurerm_linux_virtual_machine` | `private_ip_address` |
+| `google_compute_instance` | `network_interface[0].network_ip` |
+| `digitalocean_droplet` | `ipv4_address_private` |
+
+**A host with no public address is now in the inventory rather than missing from it.** It used to be
+dropped entirely, which read as a broken generator: the asset was marked Ansible-managed, the apply
+succeeded, and the host was simply absent. It is reachable from a jump box or a VPN, so the private
+address becomes the line itself, the comment says `(private address only)`, and the warning says the
+inventory fell back to it.
+
+**This is an inventory concern only.** A private address never becomes a firewall rule: two assets in
+one account use a security group reference, which cannot go stale the way a written-down address
+can. That is the same split the table below describes.
 
 **It is a skeleton and says so.** `ansible_user` defaults to the login the provider's stock image
 creates (`ec2-user`, `azureuser`, `root`) and is editable per host.

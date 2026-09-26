@@ -63,8 +63,11 @@ type ResourceType struct {
 
     // How the resource is reached, and what governs access to it. This decides
     // whether a connection to it becomes a firewall rule at all.
+    FirewallRef string          // how this provider's firewall names the asset; empty = nothing can attach
+
     Network     string          // NetFirewalled | NetServiceEndpoint | NetEdge
     AddressAttr string          // attribute holding the address; empty when AddrNone
+    PrivateAddressAttr string    // in-network address, for the Ansible inventory only
     AddressKind string          // AddrNone | AddrStaticIP | AddrEphemeralIP | AddrHostname
     StaticAddr  *StaticAddress  // how to give it a durable address, when it lacks one
 
@@ -168,10 +171,31 @@ through the same `paramField` component an asset's params use, and adding one ne
 AccountParams: AccountSettings([]string{"eu-west-2", "us-east-1", ...}, "eu-west-2"),
 ```
 
-`AccountSettings` supplies the region plus the two default key fields. All three are `Directive`:
-none is an argument on any resource. Passing `nil` regions omits the region field, for a provider
-with no account-wide region to set — no provider currently does, because DigitalOcean's account
-region is what its VPC is created in even though the provider block takes none.
+`AccountSettings` supplies the region plus the two default key fields. All are `Directive`: none is
+an argument on any resource. Any further `ParamField`s passed after the default region are the
+settings only that cloud has, and land between the region and the key fields.
+
+GCP's **Project ID** is the only one so far, and it shows the shape for the next:
+
+```go
+AccountParams: AccountSettings(regions, "europe-west2", ParamField{
+    Key: ParamProject, Label: "Project ID", Type: FieldText, Default: "", Directive: true,
+}),
+Variables: []Variable{{
+    Name: "{{account}}_project", Description: "GCP project ID", Default: `"my-project"`,
+    DefaultFromParam: ParamProject,
+}},
+```
+
+`Variable.DefaultFromParam` names the account param whose value becomes the variable's default.
+The variable stays either way, so the value can still be overridden per apply with `TF_VAR` without
+editing the chart — the same shape the region uses. Read any account setting with
+`Provider.AccountParam(acc.Params, key)`, which falls back to the field's own default;
+`Provider.Region` is a wrapper on it.
+
+**A `DefaultFromParam` variable whose param is blank is warned about.** `accountSettingWarnings`
+names the field label and the variable, because the fallback is a placeholder — a GCP plan against
+`my-project` fails with a permissions error that names anything but the setting nobody filled in.
 
 Read a region with `Provider.Region(acc.Params)`, which falls back to the field's default. Never
 read `params["region"]` directly: the generator always needs a value, because a provider block with
@@ -232,6 +256,21 @@ Rules to follow:
   Do **not** set `StaticAddr` on a resource whose address is required scaffolding rather than a
   choice. Azure's App Gateway always needs an `azurerm_public_ip`, so generation creates one
   regardless and a toggle would be a control that does nothing.
+- **Set `PrivateAddressAttr` on anything that can be Ansible-managed.** It is the address the
+  resource has inside its own network, and the inventory writes it commented under the public one so
+  that running Ansible from a bastion is uncommenting a line. It needs no kind and no gate, unlike
+  `AddressAttr`: a machine in a VPC always has one. It is never used for a firewall rule.
+- **Set `FirewallRef` on a `NetFirewalled` type whose firewall points at the resource**, which is
+  Azure and DigitalOcean. Azure attaches a network security group to a NIC, so the expression is
+  the NIC companion; DigitalOcean attaches a firewall to droplets, so it is the droplet ID. AWS and
+  GCP work the other way round — the resource names its own firewall — and are handled by
+  `attachArg()` in `internal/tofu/emit.go`, which is the only list of those.
+
+  **Empty means nothing can attach**, and that is a real answer: an Azure SQL database has no
+  network interface, and a DigitalOcean managed database is not a droplet. Those types now generate
+  no firewall at all and are named by `attachmentGaps()` instead. The previous behaviour emitted an
+  attachment referencing a resource that was never declared, which failed `tofu validate` — and
+  before that, read as protection that was not there.
 - **Mark a param `Directive: true` when it is not an HCL argument.** `static_public_ip` is the
   current example: `aws_instance` has no argument by that name, so emitting it verbatim would
   produce invalid configuration. Directives still render in the drawer and still live in
