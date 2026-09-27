@@ -311,7 +311,11 @@ func companionResource(w *writer, p catalog.Provider, acc model.Account, a model
 		// A data source is looked up, not created, so "requires this" would misread
 		// as something the apply brings into existence.
 		kind = "data"
-		w.line("# %s resolves its image here, so the id is right for the account's region", a.Name)
+		note := c.Note
+		if note == "" {
+			note = "resolves this at plan time rather than creating it"
+		}
+		w.line("# %s %s", a.Name, note)
 	} else {
 		w.line("# %s requires this", a.Name)
 	}

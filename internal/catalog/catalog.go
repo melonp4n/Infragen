@@ -163,6 +163,14 @@ type Companion struct {
 	// value infrachart cannot see — an SSH key supplied as a Terraform variable —
 	// where the decision has to be made at plan time rather than generation time.
 	Count string `json:"count,omitempty"`
+
+	// Note is the comment written above a data companion, where the reason it is
+	// a lookup rather than a resource is worth stating — an AMI ID names an image
+	// in one region, so resolving it is the whole point. Empty gets a generic
+	// line. It lives here because the alternative was the emitter recognising a
+	// particular TofuType, which is exactly what the catalog model exists to
+	// avoid.
+	Note string `json:"note,omitempty"`
 }
 
 // ParamRootBlockDevice opts an instance into a managed root volume. An
@@ -187,6 +195,59 @@ const ParamFunctionURLAuth = "function_url_auth"
 // ParamOriginProtocol is how an edge talks to its origin, which decides which
 // port on the origin the drawn port refers to.
 const ParamOriginProtocol = "origin_protocol_policy"
+
+// ParamCachePolicy names the CloudFront cache policy the distribution uses.
+//
+// A distribution must carry either a cache policy or the deprecated
+// forwarded_values block, and CloudFront refuses to create one with neither —
+// "The parameter ForwardedValues is required", which only ever appears at apply
+// because both are optional in the provider schema. It is a directive: the name
+// is an argument on the data source looked up beside the distribution, and
+// cache_policy_id on the behaviour is a reference to that lookup.
+const ParamCachePolicy = "cache_policy"
+
+// ParamDetachVPCOrigin declares the VPC origin without associating the
+// distribution with it, which is the only way to edit or remove one.
+//
+// CloudFront refuses UpdateVpcOrigin and DeleteVpcOrigin while a distribution
+// references the origin — "The specified VPC origin is currently associated with
+// one or more distributions" — and the provider plans every field of
+// vpc_origin_endpoint_config as an in-place update, so there is no replacement to
+// reorder. Changing the drawn port is enough to hit it. The disassociation has to
+// be its own apply, which means the chart has to be able to describe one.
+const ParamDetachVPCOrigin = "detach_vpc_origin"
+
+// ParamOriginHTTPPort and ParamOriginHTTPSPort are the two ports CloudFront may
+// fetch an origin on.
+//
+// Both are required arguments, and under match-viewer both are live: CloudFront
+// uses HTTP to the origin when the viewer used HTTP and HTTPS when it did not. So
+// one port drawn on the line cannot name what the origin is fetched on, which is
+// how the untouched one kept a default nothing had opened. The line still says
+// what may reach the asset — that is the firewall rule — and these say what
+// CloudFront asks for. A port here that the line does not permit is reported.
+//
+// Directives: the arguments sit on custom_origin_config, or on the VPC origin
+// companion, both of which origin_aws.go owns.
+const (
+	ParamOriginHTTPPort  = "origin_http_port"
+	ParamOriginHTTPSPort = "origin_https_port"
+)
+
+// ParamOriginAccess picks how CloudFront reaches its origin: privately over a
+// service-managed interface inside the VPC, or across the internet to a public
+// address. Neither vpc_origin_config nor custom_origin_config is an argument on
+// the distribution body — origin_aws.go owns the whole origin block — so this is
+// a directive.
+const ParamOriginAccess = "origin_access"
+
+// The two ways in. A select rather than a boolean because the collision check in
+// catalog_test.go can only prove two branches never both fire when they are two
+// values of one param.
+const (
+	OriginAccessVPC    = "vpc"
+	OriginAccessPublic = "public"
+)
 
 // ParamFrontendPort is the port an edge listens on. Separate from the port drawn
 // on the line behind it: listening on 443 and reaching the application on 8080
@@ -355,7 +416,18 @@ type Origin struct {
 	// first. An instance is only an origin once it has a durable address —
 	// aws_instance.public_dns moves on stop/start, so an origin naming it breaks
 	// silently later, which is why a firewall rule may not name it either.
+	//
+	// It describes the public path only. An edge that reaches the resource
+	// privately needs no address on it at all, so the check belongs to whichever
+	// adapter is doing the reaching rather than to every cloud at once.
 	RequiresParam string
+	// VPCOrigin is the domain name CloudFront fetches on when it reaches this
+	// type privately, through aws_cloudfront_vpc_origin. Empty means the type
+	// cannot be one — a function URL is not in a VPC — and a distribution set to
+	// private access is refused rather than quietly made public. The ARN the VPC
+	// origin points at is always <tofuType>.<asset>.arn, so it needs no field of
+	// its own. {{asset}} expands.
+	VPCOrigin string
 }
 
 // ResourceType is one deployable thing, e.g. an EC2 instance.

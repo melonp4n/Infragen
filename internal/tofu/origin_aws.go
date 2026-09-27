@@ -18,20 +18,34 @@ import (
 type awsOrigin struct{}
 
 func (awsOrigin) wire(edge, from Endpoint, rules []model.Rule) wiring {
-	port, reason := originPort(rules)
-	if reason != "" {
-		return wiring{reason: reason}
-	}
 	policy, _ := edge.Asset.Params[catalog.ParamOriginProtocol].(string)
+
+	// Both ports come from the distribution, not from the line. Under match-viewer
+	// both are live, so the line's single port cannot name them — it says what may
+	// reach the asset, and originPortWarnings reports a port named here that it
+	// does not permit.
+	httpPort, httpsPort := originPorts(edge)
+
+	if access, _ := edge.Asset.Params[catalog.ParamOriginAccess].(string); access == catalog.OriginAccessVPC {
+		return vpcOrigin(awsOrigin{}, edge, from, httpPort, httpsPort)
+	}
+
+	// Reaching an origin across the internet means it needs an address that
+	// survives a restart, which is what the type's gate names. The private path
+	// above needs none, so the check lives here rather than in origin.go.
+	if !catalog.GateOpen(from.Type.Origin.RequiresParam, "", from.Asset.Params) {
+		return wiring{reason: fmt.Sprintf("%s is not reachable as an origin yet — turn on %q on it",
+			from.Asset.Name, paramLabel(from.Type, from.Type.Origin.RequiresParam))}
+	}
 
 	// A function URL is served over HTTPS on 443 and nothing else, so a chart
 	// saying otherwise is refused rather than quietly overridden.
 	lambda := from.Type.Origin.RequiresParam == catalog.ParamFunctionURL
 	if lambda {
-		if port != "443" {
+		if httpsPort != "443" {
 			return wiring{reason: fmt.Sprintf(
-				"a function URL is served over HTTPS on 443, so %s cannot be fetched on %s — set the port to 443",
-				from.Asset.Name, port)}
+				"a function URL is served over HTTPS on 443, so %s cannot be fetched on %s — set %q to 443",
+				from.Asset.Name, httpsPort, paramLabel(edge.Type, catalog.ParamOriginHTTPSPort))}
 		}
 		if policy == "http-only" {
 			return wiring{reason: fmt.Sprintf(
@@ -40,16 +54,8 @@ func (awsOrigin) wire(edge, from Endpoint, rules []model.Rule) wiring {
 		}
 	}
 
-	// http_port and https_port are both required. The drawn port fills the one the
-	// protocol policy actually uses; the other keeps a default nothing connects to.
-	httpPort, httpsPort := "80", "443"
-	if policy == "http-only" {
-		httpPort = port
-	} else {
-		httpsPort = port
-	}
 	w := wiring{fixed: []catalog.Fixed{
-		{Block: "origin", Key: "domain_name", Expr: originExpr(from)},
+		{Block: "origin", Key: "domain_name", Expr: originExpr(from, from.Type.Origin.Expr)},
 		{Block: "origin.custom_origin_config", Key: "http_port", Expr: httpPort},
 		{Block: "origin.custom_origin_config", Key: "https_port", Expr: httpsPort},
 		{Block: "origin.custom_origin_config", Key: "origin_protocol_policy",
@@ -120,4 +126,93 @@ func lambdaOrigin(from Endpoint, w wiring) wiring {
 		},
 	)
 	return w
+}
+
+// vpcOrigin is CloudFront reaching the origin over a service-managed interface
+// inside the VPC, on its private address, with no public address anywhere.
+//
+// The security group rule does not change: AWS admits a VPC origin either by the
+// CloudFront managed prefix list or by the service-managed security group it
+// creates afterwards, and only the first can be written before the VPC origin
+// exists. So the origin-facing prefix list edgeConstruct already emits is still
+// the right source, however wrong that reads next to a private address.
+func vpcOrigin(a awsOrigin, edge, from Endpoint, httpPort, httpsPort string) wiring {
+	if from.Type.Origin.VPCOrigin == "" {
+		return wiring{reason: fmt.Sprintf(
+			"CloudFront reaches a VPC origin over an interface in the VPC, and %s is not in one — "+
+				"set %q on %s to %q",
+			from.Asset.Name, "Origin access", edge.Asset.Name, catalog.OriginAccessPublic)}
+	}
+	w := wiring{
+		fixed: []catalog.Fixed{
+			{Block: "origin", Key: "domain_name", Expr: originExpr(from, from.Type.Origin.VPCOrigin)},
+			{Block: "origin.vpc_origin_config", Key: "vpc_origin_id",
+				Expr: "aws_cloudfront_vpc_origin.{{asset}}_vpc_origin.id"},
+		},
+		companions: []catalog.Companion{{
+			// ponytail: no lifecycle block, so editing this needs the detach
+			// toggle and three applies. Collapsing an edit to one apply means a
+			// terraform_data trigger + replace_triggered_by + create_before_destroy
+			// and a name derived from the config — see TOFU-MAPPING.md.
+			TofuType: "aws_cloudfront_vpc_origin", Suffix: "vpc_origin",
+			Fixed: []catalog.Fixed{
+				{Block: "vpc_origin_endpoint_config", Key: "name", Expr: `"{{asset-dashed}}-vpc-origin"`},
+				// The companion belongs to the edge, so {{asset}} is the distribution.
+				// The origin's own address has to be written out, as in lambdaOrigin.
+				{Block: "vpc_origin_endpoint_config", Key: "arn",
+					Expr: fmt.Sprintf("%s.%s.arn", from.Type.TofuType, from.Asset.ID)},
+				{Block: "vpc_origin_endpoint_config", Key: "http_port", Expr: httpPort},
+				{Block: "vpc_origin_endpoint_config", Key: "https_port", Expr: httpsPort},
+				{Block: "vpc_origin_endpoint_config", Key: "origin_protocol_policy",
+					Expr: "{{param:" + catalog.ParamOriginProtocol + "}}"},
+				{Block: "vpc_origin_endpoint_config.origin_ssl_protocols", Key: "items", Expr: `["TLSv1.2"]`},
+				{Block: "vpc_origin_endpoint_config.origin_ssl_protocols", Key: "quantity", Expr: "1"},
+			},
+		}},
+	}
+	// Detached: the VPC origin stays declared, the distribution stops naming it.
+	// Nothing else can free it — CloudFront refuses to update or delete one that a
+	// distribution references, so the disassociation has to land in an apply of its
+	// own. The distribution falls back to the same placeholder it uses with nothing
+	// drawn behind it, which is a state the user is warned about rather than left
+	// to notice.
+	if detach, _ := edge.Asset.Params[catalog.ParamDetachVPCOrigin].(bool); detach {
+		return wiring{
+			fixed:      a.unwired(edge).fixed,
+			vars:       a.unwired(edge).vars,
+			companions: w.companions,
+		}
+	}
+	return w
+}
+
+// detached reports whether this edge is holding its VPC origin at arm's length.
+func detached(edge Endpoint) bool {
+	if access, _ := edge.Asset.Params[catalog.ParamOriginAccess].(string); access != catalog.OriginAccessVPC {
+		return false
+	}
+	d, _ := edge.Asset.Params[catalog.ParamDetachVPCOrigin].(bool)
+	return d
+}
+
+// originPorts is what this distribution fetches its origin on. Both are always
+// emitted because CloudFront requires both, whichever the protocol policy uses.
+func originPorts(edge Endpoint) (string, string) {
+	httpPort, _ := edge.Asset.Params[catalog.ParamOriginHTTPPort].(string)
+	httpsPort, _ := edge.Asset.Params[catalog.ParamOriginHTTPSPort].(string)
+	return httpPort, httpsPort
+}
+
+// originPortsUsed is the subset CloudFront will actually connect on, which is
+// both of them under match-viewer — the case that made one drawn port wrong.
+func originPortsUsed(edge Endpoint) []string {
+	httpPort, httpsPort := originPorts(edge)
+	switch policy, _ := edge.Asset.Params[catalog.ParamOriginProtocol].(string); policy {
+	case "http-only":
+		return []string{httpPort}
+	case "match-viewer":
+		return []string{httpPort, httpsPort}
+	default:
+		return []string{httpsPort}
+	}
 }

@@ -40,6 +40,13 @@ func originChart(provider, edgeCode, originCode, port string, edgeParams, origin
 	}
 }
 
+// publicAccess pins a distribution to the public path. The default is a VPC
+// origin, so a case about a public address has to say so or it is testing the
+// other branch.
+func publicAccess() map[string]any {
+	return map[string]any{catalog.ParamOriginAccess: catalog.OriginAccessPublic}
+}
+
 func originOf(t *testing.T, s model.Session) wiring {
 	t.Helper()
 	model.Normalise(&s)
@@ -49,7 +56,7 @@ func originOf(t *testing.T, s model.Session) wiring {
 // An instance whose address moves is not an origin. The refusal has to name the
 // toggle that fixes it, or the user is told no and not what to do.
 func TestEphemeralInstanceIsNotAnOrigin(t *testing.T) {
-	got := originOf(t, originChart("aws", "CDN", "EC2", "443", nil, nil)).reason
+	got := originOf(t, originChart("aws", "CDN", "EC2", "443", publicAccess(), nil)).reason
 	if got == "" {
 		t.Fatal("an instance with a moving address was accepted as an origin")
 	}
@@ -60,7 +67,7 @@ func TestEphemeralInstanceIsNotAnOrigin(t *testing.T) {
 
 // With the toggle on, the origin is the durable name and not the instance's own.
 func TestStaticInstanceOriginUsesTheElasticAddress(t *testing.T) {
-	w := originOf(t, originChart("aws", "CDN", "EC2", "443", nil,
+	w := originOf(t, originChart("aws", "CDN", "EC2", "443", publicAccess(),
 		map[string]any{catalog.ParamStaticPublicIP: true}))
 	if w.reason != "" {
 		t.Fatalf("refused an instance with a durable address: %s", w.reason)
@@ -71,7 +78,7 @@ func TestStaticInstanceOriginUsesTheElasticAddress(t *testing.T) {
 }
 
 func TestLoadBalancerOriginUsesItsDNSName(t *testing.T) {
-	w := originOf(t, originChart("aws", "CDN", "ALB", "8080", nil, nil))
+	w := originOf(t, originChart("aws", "CDN", "ALB", "8080", publicAccess(), nil))
 	if w.reason != "" {
 		t.Fatalf("refused a load balancer origin: %s", w.reason)
 	}
@@ -87,17 +94,70 @@ func TestDatabaseCannotBeAnOrigin(t *testing.T) {
 	}
 }
 
-// The port reaches every argument that has to carry it. Each is asserted on its
-// own, so re-hardcoding any one of them fails here rather than passing because
-// the default happened to match.
-func TestDrawnPortReachesTheOriginPort(t *testing.T) {
+// Both ports reach the arguments that carry them. Each is asserted on its own,
+// so re-hardcoding either fails here rather than passing because a default
+// happened to match.
+func TestOriginPortsReachTheOriginConfig(t *testing.T) {
 	w := originOf(t, originChart("aws", "CDN", "ALB", "8080",
-		map[string]any{catalog.ParamOriginProtocol: "http-only"}, nil))
+		map[string]any{
+			catalog.ParamOriginProtocol:  "http-only",
+			catalog.ParamOriginAccess:    catalog.OriginAccessPublic,
+			catalog.ParamOriginHTTPPort:  "8080",
+			catalog.ParamOriginHTTPSPort: "8443",
+		}, nil))
 	if got := fixedExpr(w, "origin.custom_origin_config", "http_port"); got != "8080" {
-		t.Errorf("http_port is %q, want the drawn port", got)
+		t.Errorf("http_port is %q, want the port set on the distribution", got)
 	}
-	if got := fixedExpr(w, "origin.custom_origin_config", "https_port"); got != "443" {
-		t.Errorf("https_port is %q, want the untouched default", got)
+	if got := fixedExpr(w, "origin.custom_origin_config", "https_port"); got != "8443" {
+		t.Errorf("https_port is %q, want the port set on the distribution", got)
+	}
+}
+
+// The defect this split exists for. Under match-viewer CloudFront connects on
+// whichever port matches the viewer, so both are live — and while one drawn port
+// filled one of them, the other kept a default nothing had opened.
+func TestMatchViewerUsesBothPorts(t *testing.T) {
+	edge := map[string]any{
+		catalog.ParamOriginProtocol:  "match-viewer",
+		catalog.ParamOriginHTTPPort:  "8080",
+		catalog.ParamOriginHTTPSPort: "8443",
+	}
+	s := originChart("aws", "CDN", "ALB", "8443", edge, nil)
+	model.Normalise(&s)
+
+	vpc := companionNamed(t, originWiring(s)["edge"], "aws_cloudfront_vpc_origin")
+	if got := companionExpr(vpc, "vpc_origin_endpoint_config", "http_port"); got != "8080" {
+		t.Errorf("http_port is %q, want the port set on the distribution", got)
+	}
+
+	// The line permits 8443 and not 8080, so the plaintext half would be refused
+	// by the security group while every file in the output looks correct.
+	got := joined(originWarnings(s, originWiring(s)))
+	if !strings.Contains(got, "8080") {
+		t.Errorf("no warning names the port the line does not permit:\n%s", got)
+	}
+	if strings.Contains(got, "8443") {
+		t.Errorf("warned about a port the line does permit:\n%s", got)
+	}
+}
+
+// A port the distribution fetches on that no rule allows is a closed door, and
+// nothing else in the output says so.
+func TestUnpermittedOriginPortWarns(t *testing.T) {
+	s := originChart("aws", "CDN", "ALB", "443",
+		map[string]any{catalog.ParamOriginHTTPSPort: "8443"}, nil)
+	model.Normalise(&s)
+	if got := joined(originWarnings(s, originWiring(s))); !strings.Contains(got, "8443") {
+		t.Errorf("fetching on an unopened port produced no warning:\n%s", got)
+	}
+}
+
+// The ordinary case stays quiet, or the warning is noise and gets ignored.
+func TestPermittedOriginPortIsSilent(t *testing.T) {
+	s := originChart("aws", "CDN", "ALB", "443", nil, nil)
+	model.Normalise(&s)
+	if got := joined(originWarnings(s, originWiring(s))); strings.Contains(got, "permits no rule") {
+		t.Errorf("a matching port warned anyway:\n%s", got)
 	}
 }
 
@@ -131,8 +191,10 @@ func TestBackendBucketCannotFrontAnInstance(t *testing.T) {
 // An origin is fetched on one port, so neither a wildcard nor a range names one,
 // and a blank port is unspecified rather than 80.
 func TestOriginPortMustBeASinglePort(t *testing.T) {
+	// GCP, because a Google backend still takes its port from the line: the port
+	// becomes a named_port and a health check, and neither can be a range.
 	for _, port := range []string{"", "*", "8000-8080"} {
-		s := originChart("aws", "CDN", "ALB", port, nil, nil)
+		s := originChart("gcp", "GLB", "GCE", port, nil, nil)
 		if got := originOf(t, s).reason; got == "" {
 			t.Errorf("port %q was accepted as an origin port", port)
 		}
@@ -143,7 +205,7 @@ func TestOriginPortMustBeASinglePort(t *testing.T) {
 // origin block at all is not valid HCL for CloudFront, so the fallback survives
 // alongside the reason.
 func TestRefusedOriginStillLeavesADistribution(t *testing.T) {
-	w := originOf(t, originChart("aws", "CDN", "EC2", "443", nil, nil))
+	w := originOf(t, originChart("aws", "CDN", "EC2", "443", publicAccess(), nil))
 	if w.reason == "" {
 		t.Fatal("expected a refusal")
 	}
@@ -169,7 +231,7 @@ func TestUnconnectedEdgeWarns(t *testing.T) {
 // The drawer reads Classify, not the wiring map, so a refusal that never reaches
 // an Outcome is a refusal the user only meets after pressing Generate.
 func TestRefusedOriginShowsOnTheRuleRow(t *testing.T) {
-	s := originChart("aws", "CDN", "EC2", "443", nil, nil)
+	s := originChart("aws", "CDN", "EC2", "443", publicAccess(), nil)
 	model.Normalise(&s)
 	f, ok := Classify(s).FlowFor("conn", model.NodeRef{Type: model.NodeAsset, AccountID: "acc", AssetID: "edge"})
 	if !ok {
@@ -262,6 +324,154 @@ func TestParamPlaceholderIsNotRescanned(t *testing.T) {
 	if strings.Contains(got, "leaked") {
 		t.Errorf("a parameter value was expanded as a placeholder: %s", got)
 	}
+}
+
+// The point of the whole feature: an instance with no public address of any kind
+// is a valid origin, because CloudFront reaches it from inside the VPC.
+func TestPrivateInstanceIsAVPCOrigin(t *testing.T) {
+	s := originChart("aws", "CDN", "EC2", "443", nil, nil)
+	model.Normalise(&s)
+	// Asserted rather than assumed: if either default ever flips, this case would
+	// otherwise keep passing while testing a public instance.
+	origin := s.Accounts[0].Assets[1].Params
+	if origin[catalog.ParamStaticPublicIP] != false || origin["associate_public_ip_address"] != false {
+		t.Fatalf("the instance under test has a public address: %v", origin)
+	}
+
+	w := originWiring(s)["edge"]
+	if w.reason != "" {
+		t.Fatalf("refused an instance with no public address: %s", w.reason)
+	}
+	if got := fixedExpr(w, "origin", "domain_name"); got != "aws_instance.origin.private_dns" {
+		t.Errorf("origin domain is %q, want the instance's private name", got)
+	}
+	if got := fixedExpr(w, "origin.custom_origin_config", "http_port"); got != "" {
+		t.Errorf("a VPC origin also emitted custom_origin_config (%q) — the two are alternatives", got)
+	}
+	if got := fixedExpr(w, "origin.vpc_origin_config", "vpc_origin_id"); got != "aws_cloudfront_vpc_origin.{{asset}}_vpc_origin.id" {
+		t.Errorf("vpc_origin_id is %q", got)
+	}
+	vpc := companionNamed(t, w, "aws_cloudfront_vpc_origin")
+	if got := companionExpr(vpc, "vpc_origin_endpoint_config", "arn"); got != "aws_instance.origin.arn" {
+		t.Errorf("the VPC origin points at %q, want the instance it fronts", got)
+	}
+}
+
+func TestLoadBalancerIsAVPCOrigin(t *testing.T) {
+	w := originOf(t, originChart("aws", "CDN", "ALB", "8080", nil, nil))
+	if w.reason != "" {
+		t.Fatalf("refused a load balancer as a VPC origin: %s", w.reason)
+	}
+	vpc := companionNamed(t, w, "aws_cloudfront_vpc_origin")
+	if got := companionExpr(vpc, "vpc_origin_endpoint_config", "arn"); got != "aws_lb.origin.arn" {
+		t.Errorf("the VPC origin points at %q, want the load balancer", got)
+	}
+}
+
+// A function URL is not in the VPC, so it is refused by name rather than quietly
+// served over the public path — a security setting that silently does the other
+// thing is the failure this tool exists to avoid.
+func TestFunctionURLCannotBeAVPCOrigin(t *testing.T) {
+	got := originOf(t, originChart("aws", "CDN", "λ", "443", nil,
+		map[string]any{catalog.ParamFunctionURL: true})).reason
+	if got == "" {
+		t.Fatal("a function URL was accepted as a VPC origin")
+	}
+	if !strings.Contains(got, "Origin access") || !strings.Contains(got, catalog.OriginAccessPublic) {
+		t.Errorf("refusal does not name the switch that fixes it: %s", got)
+	}
+}
+
+// The ports have to reach the VPC origin too. They are on the companion rather
+// than the distribution, which is exactly how a port gets hardcoded and nobody
+// notices.
+func TestOriginPortsReachTheVPCOrigin(t *testing.T) {
+	w := originOf(t, originChart("aws", "CDN", "ALB", "8080",
+		map[string]any{
+			catalog.ParamOriginProtocol:  "http-only",
+			catalog.ParamOriginHTTPPort:  "8080",
+			catalog.ParamOriginHTTPSPort: "8443",
+		}, nil))
+	vpc := companionNamed(t, w, "aws_cloudfront_vpc_origin")
+	if got := companionExpr(vpc, "vpc_origin_endpoint_config", "http_port"); got != "8080" {
+		t.Errorf("http_port is %q, want the port set on the distribution", got)
+	}
+	if got := companionExpr(vpc, "vpc_origin_endpoint_config", "https_port"); got != "8443" {
+		t.Errorf("https_port is %q, want the port set on the distribution", got)
+	}
+}
+
+// A private origin still needs the managed prefix list: AWS admits a VPC origin
+// either by that list or by a security group it creates afterwards, and only the
+// first can be written before the VPC origin exists.
+func TestVPCOriginStillGetsThePrefixListRule(t *testing.T) {
+	s := originChart("aws", "CDN", "EC2", "443", nil, nil)
+	model.Normalise(&s)
+	f, ok := Classify(s).FlowFor("conn", model.NodeRef{Type: model.NodeAsset, AccountID: "acc", AssetID: "edge"})
+	if !ok {
+		t.Fatal("no flow for the edge-to-origin direction")
+	}
+	if f.Outcomes[0].Strategy != StratEdgeNative {
+		t.Fatalf("strategy is %q, want the native edge construct", f.Outcomes[0].Strategy)
+	}
+	if !strings.Contains(f.Outcomes[0].Source, "cloudfront.origin-facing") {
+		t.Errorf("source is %q, want the CloudFront managed prefix list", f.Outcomes[0].Source)
+	}
+}
+
+// Detaching is the only way AWS allows a VPC origin to be edited or deleted, so
+// the resource has to survive the disassociation — a state that dropped both
+// would be the same dead end the user started in.
+func TestDetachedKeepsTheVPCOriginAndDropsTheAssociation(t *testing.T) {
+	w := originOf(t, originChart("aws", "CDN", "EC2", "443",
+		map[string]any{catalog.ParamDetachVPCOrigin: true}, nil))
+	if w.reason != "" {
+		t.Fatalf("detaching refused the origin outright: %s", w.reason)
+	}
+	companionNamed(t, w, "aws_cloudfront_vpc_origin")
+	if got := fixedExpr(w, "origin.vpc_origin_config", "vpc_origin_id"); got != "" {
+		t.Errorf("the distribution still names the VPC origin (%q), so CloudFront would still refuse to free it", got)
+	}
+	if got := fixedExpr(w, "origin", "domain_name"); !strings.HasPrefix(got, "var.") {
+		t.Errorf("a detached distribution fetches from %q, want the placeholder", got)
+	}
+	if len(w.vars) == 0 {
+		t.Error("the placeholder variable is not declared, so the chart would not plan")
+	}
+}
+
+// Detached is a maintenance state, not a resting one: the chart says the CDN
+// fronts the instance and the configuration fetches from example.com.
+func TestDetachedWarnsOnTheNode(t *testing.T) {
+	s := originChart("aws", "CDN", "EC2", "443",
+		map[string]any{catalog.ParamDetachVPCOrigin: true}, nil)
+	model.Normalise(&s)
+	got := joined(originWarnings(s, originWiring(s)))
+	if !strings.Contains(got, "detached") {
+		t.Fatalf("a detached distribution produced no warning:\n%s", got)
+	}
+	if !strings.Contains(got, "Detach VPC origin") {
+		t.Errorf("the warning does not name the toggle that clears it:\n%s", got)
+	}
+}
+
+// The toggle means nothing on the public path, and a control that appears where
+// it does nothing is one the user will try.
+func TestDetachIsGatedOnTheVPCPath(t *testing.T) {
+	rt, ok := catalog.Type("aws", "CDN")
+	if !ok {
+		t.Fatal("no CloudFront type")
+	}
+	for _, f := range rt.Params {
+		if f.Key != catalog.ParamDetachVPCOrigin {
+			continue
+		}
+		if f.RequiresParam != catalog.ParamOriginAccess || f.RequiresValue != catalog.OriginAccessVPC {
+			t.Errorf("detach is gated on %q=%q, want the VPC path", f.RequiresParam, f.RequiresValue)
+		}
+		return
+	}
+	t.Fatal("no detach field on the CloudFront type")
 }
 
 func fixedExpr(w wiring, block, key string) string {

@@ -559,6 +559,73 @@ available in the build environment, so nothing has clicked them. `STATUS.md` has
 about the interaction layer since the beginning, and this change adds to that debt rather than
 paying it off.
 
+## Done — CloudFront reaches an origin privately
+
+A `CDN → EC2` line could only be wired one way: the instance had to carry an elastic IP, because
+the distribution fetched from `aws_eip.<id>.public_dns`. The origin was therefore reachable from
+the internet by anything that learned the address, with one security group rule in front of it.
+AWS's VPC origins exist for exactly this — CloudFront reaches an ALB, an NLB or an instance over a
+service-managed interface inside the VPC, on its private name.
+
+| Change | State |
+|---|---|
+| `catalog.Origin.VPCOrigin` — the private name, empty meaning the type cannot be a VPC origin | **done** |
+| `ParamOriginAccess` on the CloudFront type, `vpc` (default) or `public` | **done** |
+| `vpcOrigin()` in `origin_aws.go`: an `aws_cloudfront_vpc_origin` companion plus `vpc_origin_config` | **done** |
+| `Origin.RequiresParam` moved out of `origin.go` into the adapter, because it describes the public path only | **done** |
+| `EC2` → `aws_instance.<id>.private_dns`, `ALB` → `aws_lb.<id>.dns_name`; `λ` stays public-only | **done** |
+| Two more distributions in the `cdn-origins` fixture, one per path | **done** |
+
+The default is the private path, which means a type that cannot be a VPC origin is now refused
+until the user switches the distribution to `public`. That is deliberate: silently serving the
+public path from a setting that says `vpc` is the "appears to work and does nothing" failure this
+repo keeps running into.
+
+**The firewall half did not change, and that is the surprising part.** A VPC origin still wants
+the `com.amazonaws.global.cloudfront.origin-facing` managed prefix list. AWS's other option is the
+service-managed security group it creates *after* the VPC origin exists, which Terraform cannot
+reference. So `classify.go`, `firewall.go` and `firewall_aws.go` are untouched, and
+`TestVPCOriginStillGetsThePrefixListRule` exists to stop someone "fixing" it.
+
+**A distribution could never have been created.** Applying one failed with
+`InvalidArgument: The parameter ForwardedValues is required` — a cache behaviour needs either a
+cache policy or the deprecated `forwarded_values` block, both of which the provider schema marks
+optional, so `validate` had nothing to say. `ParamCachePolicy` is now a dropdown of AWS managed
+policy names, resolved by a `data "aws_cloudfront_cache_policy"` companion; the `default_ttl`
+field is gone, because a policy carries its own TTLs and CloudFront refuses both.
+`TestDistributionCarriesACachePolicy` is the guard. `Companion.Note` was added in the same pass so
+the AMI lookup keeps its region comment without the emitter recognising a TofuType.
+
+**A VPC origin could not be edited or removed once applied.** CloudFront refuses `UpdateVpcOrigin`
+and `DeleteVpcOrigin` while a distribution references the origin, and the provider has no
+`RequiresReplace` on any field of `vpc_origin_endpoint_config`, so every edit is an in-place update
+that hits the same 409 — changing the drawn port was enough. `ParamDetachVPCOrigin` declares the
+VPC origin without associating it, which is the disassociation apply AWS requires; the
+distribution falls back to the `unwired()` placeholder and the node carries an error-severity
+warning for as long as it is detached. Three tests cover the wiring, the warning and the gate, and
+`cdn-origins` gained a detached distribution because no other fixture emits that shape.
+
+**`match-viewer` fetched on a port nothing had opened.** CloudFront connects to the origin on
+whichever of `http_port`/`https_port` matches the viewer's protocol, so under `match-viewer` both
+are live — but a single port drawn on the line could only fill one, and the other kept its default.
+The ports now belong to the distribution (`Origin HTTP port`, `Origin HTTPS port`) and the line
+carries an ordinary firewall rule, which is what it always was on every other kind of line.
+`originPortsUnpermitted` warns at error severity when the distribution would connect on a port no
+rule permits, because the HCL is valid either way. GCP is unchanged: its backend port is still
+drawn on the line, since it becomes a named port and a health check at once.
+
+Deferred, deliberately: collapsing a VPC origin *edit* to one apply with a `terraform_data`
+trigger, `replace_triggered_by`, `create_before_destroy` and a config-derived `name`. Written up in
+`TOFU-MAPPING.md`; not shipped because nothing here can test an apply.
+
+Still open: the browser half is unverified as ever — the `Origin access` select is an ordinary
+`FieldSelect` and needs no new markup, but nothing has clicked it. Nothing warns when a VPC-origin
+instance *also* carries a public address, which is a contradiction worth surfacing once the two
+paths have been used in anger. The subnets `scaffold.go` emits are both public, so the instance is
+private only in the sense that it has no public IP; a genuinely private subnet needs a NAT gateway
+for egress. And VPC origins are unavailable in some regions, which generation cannot check because
+the region is a variable.
+
 ## Deliberately out of scope
 
 Undo/redo, canvas zoom and pan, multi-user editing, authentication, a database, server-side

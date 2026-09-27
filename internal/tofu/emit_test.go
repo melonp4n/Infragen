@@ -46,6 +46,28 @@ func TestGenerateSeed(t *testing.T) {
 	golden(t, "seed.tf", hcl)
 }
 
+// A distribution with neither a cache policy nor the deprecated forwarded_values
+// block passes validate and is then refused by CloudFront at create with "The
+// parameter ForwardedValues is required". Both are optional in the provider
+// schema, so this is the one check that catches it before an apply does.
+func TestDistributionCarriesACachePolicy(t *testing.T) {
+	hcl, _ := generate(t, model.Seed())
+	flat := collapse(hcl)
+	if !strings.Contains(flat, "cache_policy_id = data.aws_cloudfront_cache_policy.asset_1_cache.id") {
+		t.Error("the distribution names no cache policy, so CloudFront would refuse to create it")
+	}
+	if !strings.Contains(flat, `name = "Managed-CachingDisabled"`) {
+		t.Error("the cache policy lookup does not name a policy")
+	}
+	// The two are alternatives, and CloudFront rejects a behaviour carrying both.
+	// The TTL arguments go the same way: a policy carries its own.
+	for _, arg := range []string{"forwarded_values", "default_ttl", "min_ttl", "max_ttl"} {
+		if strings.Contains(flat, arg) {
+			t.Errorf("%s is emitted alongside a cache policy, which CloudFront refuses", arg)
+		}
+	}
+}
+
 // A security group that is never attached to anything protects nothing, so the
 // output would look complete and do nothing.
 func TestGuardedAssetsAreAttached(t *testing.T) {

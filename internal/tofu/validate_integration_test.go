@@ -56,10 +56,11 @@ func TestValidateAgainstRealProviders(t *testing.T) {
 		// the private one. The private address attributes are references like any
 		// other — a wrong name is caught here and nowhere else.
 		{"ansible-private", ansiblePrivateEverywhere()},
-		// Every origin an edge can fetch from. A custom_origin_config, an origin
-		// access control, a serverless permission, an instance group and a health
-		// check are all shapes no other fixture emits, and one of the lines runs
-		// on 8080 so the drawn port is proved to reach the arguments it must.
+		// Every origin an edge can fetch from, on both of CloudFront's paths to
+		// one. A custom_origin_config, a vpc_origin_config and its VPC origin, an
+		// origin access control, a serverless permission, an instance group and a
+		// health check are all shapes no other fixture emits, and one line on each
+		// path runs on 8080 so the drawn port is proved to reach every argument.
 		{"cdn-origins", cdnOrigins()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,12 +213,45 @@ func cdnOrigins() model.Session {
 	aws := model.Account{
 		ID: "acc_aws", Name: "AWS", Provider: "aws", Params: catalog.AccountDefaults("aws"),
 		Assets: []model.Asset{
-			newAsset("aws", "cdn_to_alb", "CDN", map[string]any{catalog.ParamOriginProtocol: "http-only"}),
-			newAsset("aws", "cdn_to_ec2", "CDN", nil),
-			newAsset("aws", "cdn_to_fn", "CDN", nil),
+			// The public path. An origin reached across the internet needs an
+			// address on it, so each of these fronts an asset that has one.
+			newAsset("aws", "cdn_to_alb", "CDN", map[string]any{
+				catalog.ParamOriginProtocol: "http-only",
+				catalog.ParamOriginAccess:   catalog.OriginAccessPublic,
+				catalog.ParamOriginHTTPPort: "8080",
+			}),
+			newAsset("aws", "cdn_to_ec2", "CDN", map[string]any{catalog.ParamOriginAccess: catalog.OriginAccessPublic}),
+			newAsset("aws", "cdn_to_fn", "CDN", map[string]any{catalog.ParamOriginAccess: catalog.OriginAccessPublic}),
+			// The private path, which is the default. Neither of the assets these
+			// front carries a public address of any kind.
+			newAsset("aws", "cdn_to_vpc_alb", "CDN", map[string]any{
+				catalog.ParamOriginProtocol: "http-only",
+				catalog.ParamOriginHTTPPort: "8080",
+			}),
+			// match-viewer, where both ports are live. Non-default on both halves,
+			// so a hardcoded 80 or 443 anywhere fails validate here.
+			newAsset("aws", "cdn_match_viewer", "CDN", map[string]any{
+				catalog.ParamOriginProtocol:  "match-viewer",
+				catalog.ParamOriginHTTPPort:  "8080",
+				catalog.ParamOriginHTTPSPort: "8443",
+			}),
+			// Detached: a declared VPC origin the distribution does not name. The
+			// shape has no other fixture, and it is the one an edit has to pass
+			// through.
+			newAsset("aws", "cdn_detached", "CDN", map[string]any{catalog.ParamDetachVPCOrigin: true}),
+			// A second cache policy, so the lookup is proved against more than the
+			// one name the default happens to use.
+			newAsset("aws", "cdn_to_vpc_ec2", "CDN", map[string]any{
+				catalog.ParamCachePolicy: "Managed-CachingOptimized",
+			}),
 			newAsset("aws", "alb", "ALB", nil),
-			// An instance is only an origin once its address stops moving.
+			newAsset("aws", "vpc_alb", "ALB", map[string]any{"internal": true}),
+			newAsset("aws", "detached_ec2", "EC2", nil),
+			newAsset("aws", "mv_alb", "ALB", map[string]any{"internal": true}),
+			// An instance is only an origin across the internet once its address
+			// stops moving. Reached from inside the VPC it needs no address at all.
 			newAsset("aws", "ec2", "EC2", map[string]any{catalog.ParamStaticPublicIP: true}),
+			newAsset("aws", "vpc_ec2", "EC2", nil),
 			newAsset("aws", "fn", "λ", map[string]any{catalog.ParamFunctionURL: true}),
 		},
 	}
@@ -245,6 +279,10 @@ func cdnOrigins() model.Session {
 		Connections: []model.Connection{
 			link("acc_aws", "cdn_to_alb", "alb", "8080"),
 			link("acc_aws", "cdn_to_ec2", "ec2", "443"),
+			link("acc_aws", "cdn_to_vpc_alb", "vpc_alb", "8080"),
+			link("acc_aws", "cdn_to_vpc_ec2", "vpc_ec2", "443"),
+			link("acc_aws", "cdn_detached", "detached_ec2", "443"),
+			link("acc_aws", "cdn_match_viewer", "mv_alb", "8080"),
 			// A function URL is HTTPS on 443 and nothing else.
 			link("acc_aws", "cdn_to_fn", "fn", "443"),
 			link("acc_gcp", "glb", "gce", "8080"),

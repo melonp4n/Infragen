@@ -280,10 +280,10 @@ resource "aws_cloudfront_distribution" "asset_aws_cdn" {
   enabled     = true
   default_cache_behavior {
     viewer_protocol_policy = "redirect-to-https"
-    default_ttl            = 3600
     target_origin_id       = "asset-aws-cdn-origin"
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
+    cache_policy_id        = data.aws_cloudfront_cache_policy.asset_aws_cdn_cache.id
   }
   origin {
     origin_id   = "asset-aws-cdn-origin"
@@ -303,6 +303,12 @@ resource "aws_cloudfront_distribution" "asset_aws_cdn" {
   viewer_certificate {
     cloudfront_default_certificate = true
   }
+}
+
+# CloudFront CDN resolves this at plan time rather than creating it
+data "aws_cloudfront_cache_policy" "asset_aws_cdn_cache" {
+  provider = aws.acc_aws
+  name     = "Managed-CachingDisabled"
 }
 
 # ---------------------------------------------------------------

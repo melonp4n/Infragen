@@ -106,19 +106,16 @@ resource "aws_cloudfront_distribution" "asset_1" {
   enabled     = true
   default_cache_behavior {
     viewer_protocol_policy = "redirect-to-https"
-    default_ttl            = 3600
     target_origin_id       = "asset-1-origin"
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
+    cache_policy_id        = data.aws_cloudfront_cache_policy.asset_1_cache.id
   }
   origin {
     origin_id   = "asset-1-origin"
     domain_name = aws_lb.asset_2.dns_name
-    custom_origin_config {
-      http_port              = 80
-      https_port             = 443
-      origin_protocol_policy = "https-only"
-      origin_ssl_protocols   = ["TLSv1.2"]
+    vpc_origin_config {
+      vpc_origin_id = aws_cloudfront_vpc_origin.asset_1_vpc_origin.id
     }
   }
   restrictions {
@@ -128,6 +125,28 @@ resource "aws_cloudfront_distribution" "asset_1" {
   }
   viewer_certificate {
     cloudfront_default_certificate = true
+  }
+}
+
+# Edge CDN resolves this at plan time rather than creating it
+data "aws_cloudfront_cache_policy" "asset_1_cache" {
+  provider = aws.acc_1
+  name     = "Managed-CachingDisabled"
+}
+
+# Edge CDN requires this
+resource "aws_cloudfront_vpc_origin" "asset_1_vpc_origin" {
+  provider = aws.acc_1
+  vpc_origin_endpoint_config {
+    name                   = "asset-1-vpc-origin"
+    arn                    = aws_lb.asset_2.arn
+    http_port              = 80
+    https_port             = 443
+    origin_protocol_policy = "https-only"
+    origin_ssl_protocols {
+      items    = ["TLSv1.2"]
+      quantity = 1
+    }
   }
 }
 

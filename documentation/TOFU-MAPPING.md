@@ -599,19 +599,55 @@ correct ingress rule on the instance and a distribution that still fetched from
 Nil means nothing can front it, which is a real answer — a managed database answers no HTTP
 request, and an edge pointed at one is refused rather than wired to a placeholder.
 
-| Provider | Origin | How the edge names it | Gate |
-|---|---|---|---|
-| aws | `ALB` | `aws_lb.<id>.dns_name` | none — the name is stable |
-| aws | `EC2` | `aws_eip.<id>.public_dns` | `static_public_ip`, because `aws_instance.public_dns` moves with the instance's address |
-| aws | `λ` | `aws_lambda_function_url.<id>_url.function_url`, trimmed to a bare host | `function_url` |
-| gcp | `GCE` | not by name — a backend service reaches it through an instance group | none |
+| Provider | Origin | How the edge names it publicly | Gate | Privately (`Origin.VPCOrigin`) |
+|---|---|---|---|---|
+| aws | `ALB` | `aws_lb.<id>.dns_name` | none — the name is stable | `aws_lb.<id>.dns_name` |
+| aws | `EC2` | `aws_eip.<id>.public_dns` | `static_public_ip`, because `aws_instance.public_dns` moves with the instance's address | `aws_instance.<id>.private_dns` |
+| aws | `λ` | `aws_lambda_function_url.<id>_url.function_url`, trimmed to a bare host | `function_url` | — not in a VPC |
+| gcp | `GCE` | not by name — a backend service reaches it through an instance group | none | — |
 
 The per-cloud wiring lives in `internal/tofu/origin_aws.go` and `origin_gcp.go`, behind the
 `origin` interface in `origin.go` and chosen by `newOrigin(provider)`. This is deliberately the
 same shape as `newFirewall`: a fifth cloud is a new file, not a new branch in an existing one.
-Everything true of every cloud — the type cannot be an origin, its gate is off, a second origin
-is already wired, the port is blank or a range — is settled once in `origin.go` so no provider
-restates it.
+Everything true of every cloud — the type cannot be an origin, a second origin is already wired,
+the port is blank or a range — is settled once in `origin.go` so no provider restates it.
+
+`Origin.RequiresParam` is the exception, and it moved out of `origin.go` deliberately. What an
+origin must have turned on first depends on *how the edge reaches it*: a public fetch needs an
+address that survives a restart, a VPC origin needs no address at all. A gate raised for every
+cloud at once would have made the private path impossible.
+
+**A CloudFront origin has two paths to it, and the default is the private one.** `ParamOriginAccess`
+(`Origin access` on the distribution, values `vpc` and `public`) picks between them.
+
+- `vpc` emits `aws_cloudfront_vpc_origin` as a companion of the distribution and a
+  `vpc_origin_config` on the origin block. CloudFront reaches the resource over a service-managed
+  network interface inside the VPC, on its private name, and the origin needs no public address of
+  any kind. This is the secure shape, so it is the default.
+- `public` is the original path: `custom_origin_config` against a public name, gated on whatever
+  `Origin.RequiresParam` says. It stays because an edge that is not CloudFront, or is not in the
+  same account, can only reach an asset by a public address.
+
+A type with no `Origin.VPCOrigin` is **refused by name** under `vpc` — "set Origin access to
+public" — never quietly served the public path. A security setting that silently does the other
+thing is the failure this tool exists to avoid.
+
+**A VPC origin still wants the public prefix list.** This reads wrong and is right. AWS admits a
+VPC origin to the origin's security group either by the CloudFront managed prefix list or by the
+service-managed `CloudFront-VPCOrigins-Service-SG` that CloudFront creates *after* the VPC origin
+exists — and Terraform cannot reference a security group that does not exist yet. So
+`edgeConstruct` keeps emitting `com.amazonaws.global.cloudfront.origin-facing` on both paths, and
+`classify.go`, `firewall.go` and `firewall_aws.go` know nothing about the distinction.
+
+**VPC origins are not available in every region.** AWS supports roughly thirty-five, with a few
+availability-zone exceptions. The account's region is a Terraform variable, so generation cannot
+check it and does not try; an unsupported region fails at apply.
+
+**The subnets are not private.** `scaffold.go` associates both subnets with the internet gateway's
+route table, so both are public. AWS recommends a private subnet for a VPC origin but does not
+require one, and an instance with `associate_public_ip_address = false` has no inbound path from
+the internet either way — which is the property that matters. A private subnet needs a NAT gateway
+for egress, which is a separate change.
 
 **A function URL origin needs signing, not a weaker default.** `aws_lambda_function_url`
 defaults to `AWS_IAM`, so CloudFront's request is rejected unless it is signed. The generator
@@ -619,10 +655,29 @@ emits an `aws_cloudfront_origin_access_control` with `signing_behavior = "always
 matching `aws_lambda_permission`. Making the function URL public instead would be a security
 setting whose default is the unsafe value, which is the one thing the catalog never does.
 
-**AWS: `custom_origin_config` is not optional.** CloudFront requires it for every non-S3 origin,
-and it carries `http_port` and `https_port` as required arguments. The port drawn on the line
-fills whichever one the origin protocol policy uses; the other keeps a default nothing connects
-to.
+**AWS: an origin block carries exactly one config.** `custom_origin_config`, `s3_origin_config`
+and `vpc_origin_config` are alternatives, and CloudFront requires one of them for every non-S3
+origin. Both of the ones this tool emits carry `http_port` and `https_port` as required arguments
+— on the origin block for a public fetch, on `vpc_origin_endpoint_config` for a private one.
+`origin_ssl_protocols` is a flat list on the public path and a nested `{ items, quantity }` block
+on the private one.
+
+**AWS: a CloudFront origin is fetched on two ports, and the line names neither.** This is the one
+place the rule below does not hold. `match-viewer` makes CloudFront use HTTP to the origin when the
+viewer used HTTP and HTTPS when it did not, so *both* ports are live — and while a single drawn
+port filled whichever one the policy used, the other kept a default nothing had opened. An origin
+reachable on 8443 and nothing else then failed every plaintext request, with the chart and the
+generated file both looking correct.
+
+So the two facts are separated. `ParamOriginHTTPPort` and `ParamOriginHTTPSPort` on the
+distribution say what CloudFront asks for; the rule drawn on the line says what may reach the
+asset, and still produces the security group ingress. `originPortsUnpermitted` is what keeps them
+in step: a port the distribution will connect on that no rule permits is an error-severity warning
+naming the port. Nothing else in the output says so — the HCL is valid either way.
+
+This applies to AWS only. A Google backend still takes its port from the line, because the port
+becomes a `named_port`, a `port_name` and a health check at once, and there is no second protocol
+to disagree about.
 
 **GCP: Cloud CDN is a setting, not a resource.** `enable_cdn` lives on a backend service or a
 backend bucket, so fronting anything other than a bucket means a load balancer. That is the `GLB`
@@ -647,9 +702,63 @@ not grow one. A NEG is the serverless path:
 Cloud Functions origin will need, with no health check and no named port. That is a second branch
 in `origin_gcp.go` when GCF comes into scope, and nothing else changes.
 
-**An origin is fetched on one port.** A blank port, `*`, or a range cannot name one, so all three
-are refused — the same fail-closed reading a firewall rule gives a blank port. Guessing 80 here
-would quietly contradict a chart that says 8080.
+**A GCP origin is fetched on one port.** A blank port, `*`, or a range cannot name one, so all
+three are refused — the same fail-closed reading a firewall rule gives a blank port. Guessing 80
+here would quietly contradict a chart that says 8080. AWS is the exception above: its ports are
+named on the distribution, so the line there carries an ordinary firewall rule and may say
+whatever a firewall rule may say.
+
+**A VPC origin cannot be edited or deleted while a distribution names it.** CloudFront refuses
+both with a 409 — `The specified VPC origin is currently associated with one or more
+distributions` — and the provider plans *every* field of `vpc_origin_endpoint_config` as an
+in-place `UpdateVpcOrigin`, with no `RequiresReplace` anywhere in the resource. So there is no
+replacement for `create_before_destroy` to reorder, and changing the port drawn on the line is
+enough to wedge an apply. Upstream: [terraform-provider-aws#40905](https://github.com/hashicorp/terraform-provider-aws/issues/40905), open.
+
+`ParamDetachVPCOrigin` ("Detach VPC origin (for edits)", gated on `Origin access = vpc`) is how the
+chart describes the disassociation. It declares the `aws_cloudfront_vpc_origin` and stops the
+distribution naming it; the origin block falls back to the same `var.<asset>_origin_domain`
+placeholder `unwired()` produces. The sequence AWS requires, and the console performs, is three
+applies:
+
+1. detach on, nothing else changed — the distribution stops referencing the VPC origin;
+2. make the change — the port, the protocol, or `Origin access` → `public`, or delete the line;
+3. detach off — the distribution names it again.
+
+Steps 1 and 2 cannot be merged: Terraform updates a dependency before its dependents, so the
+`UpdateVpcOrigin` would run while the distribution still referenced it. A full `terraform destroy`
+needs none of this — the provider disables the distribution and waits for `Deployed` before
+deleting it, so the VPC origin is already free.
+
+Deferred: forcing a replacement instead — a `terraform_data` trigger, `replace_triggered_by`,
+`create_before_destroy`, and a VPC origin `name` that varies with the config so the old and new can
+coexist (names are unique account-wide). That collapses an *edit* to one apply, and is the recipe a
+maintainer suggested and two users report working in #40905. No maintainer has confirmed it and
+nothing here can test an apply, so it is written down rather than shipped. Teardown would still use
+the detach toggle.
+
+While detached the distribution fetches from the placeholder, so the chart says one thing and the
+configuration does another. That is an **error**-severity warning by this file's own definition,
+deliberate state or not: a chart left detached is a CDN serving `origin.example.com`, and the node
+badges itself rather than letting someone find out from traffic.
+
+**A cache behaviour needs a cache policy, and `validate` cannot tell you that.**
+`aws_cloudfront_distribution` marks both `cache_policy_id` and the deprecated `forwarded_values`
+optional, so a distribution carrying neither passes `terraform validate` and is then refused at
+create with `InvalidArgument: The parameter ForwardedValues is required`. The two are mutually
+exclusive, so exactly one is emitted: `ParamCachePolicy` names an AWS managed policy, a
+`data "aws_cloudfront_cache_policy"` companion looks it up by name, and
+`default_cache_behavior.cache_policy_id` references it. There is no TTL field, because a policy
+carries its own TTLs and CloudFront rejects `default_ttl` alongside one.
+
+The default is `Managed-CachingDisabled`. `Managed-CachingOptimized` keys the cache on the URL
+alone — it ignores cookies and authorization headers — so an authenticated response cached under
+one user's URL is served to the next. A security default is the safe value, and this is a
+dropdown.
+
+This is the second bug of its shape, after the internet gateway with no route table. `validate`
+proves an argument exists; it proves nothing about whether the API will accept the combination.
+Only an apply does, and nothing in this repo performs one.
 
 **A refusal still has to leave configuration that plans.** `aws_cloudfront_distribution` will not
 validate without an `origin` block, so a refused origin keeps the variable-backed fallback and

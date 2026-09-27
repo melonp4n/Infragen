@@ -54,7 +54,14 @@ func init() {
 				// CloudFront takes a domain name, never an address, and
 				// aws_instance.public_dns moves with the instance's public IP. The
 				// EIP's name is the only one that survives a stop/start.
-				Origin: &Origin{Expr: "aws_eip.{{asset}}.public_dns", RequiresParam: ParamStaticPublicIP},
+				// Privately, CloudFront is told the instance's private DNS name —
+				// AWS's own instruction for an EC2 VPC origin — and the instance
+				// needs no public address of any kind.
+				Origin: &Origin{
+					Expr:          "aws_eip.{{asset}}.public_dns",
+					RequiresParam: ParamStaticPublicIP,
+					VPCOrigin:     "aws_instance.{{asset}}.private_dns",
+				},
 				Fixed: []Fixed{
 					{Key: "subnet_id", Expr: "aws_subnet.{{account}}.id"},
 					// Bare attribute names, not strings: ignore_changes takes references.
@@ -243,7 +250,13 @@ func init() {
 				Network: NetFirewalled, AddressAttr: "dns_name", AddressKind: AddrHostname,
 				// The name a load balancer publishes does not change, so it is an
 				// origin with nothing to turn on first.
-				Origin: &Origin{Expr: "aws_lb.{{asset}}.dns_name"},
+				// One published name either way, so the private path names the same
+				// attribute. The type select covers NLB, which AWS also accepts as a
+				// VPC origin so long as it has a security group — this one does.
+				Origin: &Origin{
+					Expr:      "aws_lb.{{asset}}.dns_name",
+					VPCOrigin: "aws_lb.{{asset}}.dns_name",
+				},
 				Fixed: []Fixed{
 					// Two zones: an application load balancer requires it.
 					{Key: "subnets", Expr: "[aws_subnet.{{account}}.id, aws_subnet.{{account}}_b.id]"},
@@ -303,6 +316,13 @@ func init() {
 				Code: "CDN", Name: "CloudFront CDN", TofuType: "aws_cloudfront_distribution",
 				// CloudFront origin fetches come from a managed prefix list, not a CIDR.
 				Network: NetEdge, AddressAttr: "domain_name", AddressKind: AddrHostname,
+				// Looked up by name rather than pinned by ID: the managed policy IDs
+				// are global constants, but a written-down constant is a thing that
+				// goes stale silently.
+				Companions: []Companion{{
+					TofuType: "aws_cloudfront_cache_policy", Suffix: "cache", Data: true,
+					Fixed: []Fixed{{Key: "name", Expr: "{{param:" + ParamCachePolicy + "}}"}},
+				}},
 				Fixed: []Fixed{
 					{Key: "enabled", Expr: "true"},
 					// domain_name, custom_origin_config and the access control are not
@@ -313,6 +333,11 @@ func init() {
 					{Block: "default_cache_behavior", Key: "target_origin_id", Expr: `"{{asset-dashed}}-origin"`},
 					{Block: "default_cache_behavior", Key: "allowed_methods", Expr: `["GET", "HEAD"]`},
 					{Block: "default_cache_behavior", Key: "cached_methods", Expr: `["GET", "HEAD"]`},
+					// A behaviour needs a cache policy or the deprecated
+					// forwarded_values block. The two are mutually exclusive and
+					// neither is optional to CloudFront, whatever the schema says.
+					{Block: "default_cache_behavior", Key: "cache_policy_id",
+						Expr: "data.aws_cloudfront_cache_policy.{{asset}}_cache.id"},
 					{Block: "restrictions.geo_restriction", Key: "restriction_type", Expr: `"none"`},
 					{Block: "viewer_certificate", Key: "cloudfront_default_certificate", Expr: "true"},
 				},
@@ -323,8 +348,40 @@ func init() {
 					// origin_aws.go builds.
 					{Key: ParamOriginProtocol, Label: "Origin protocol", Type: FieldSelect,
 						Options: []string{"https-only", "http-only", "match-viewer"}, Default: "https-only", Directive: true},
+					// Private by default: a VPC origin is the whole reason an origin
+					// need not carry a public address. A type that cannot be one is
+					// refused by name rather than quietly served the public path.
+					// Not gated on the protocol policy: both are required arguments
+					// whichever is chosen, and http_port is used by two of the three
+					// values, which one RequiresValue cannot say.
+					{Key: ParamOriginHTTPPort, Label: "Origin HTTP port", Type: FieldText,
+						Default: "80", Directive: true},
+					{Key: ParamOriginHTTPSPort, Label: "Origin HTTPS port", Type: FieldText,
+						Default: "443", Directive: true},
+					{Key: ParamOriginAccess, Label: "Origin access", Type: FieldSelect,
+						Options: []string{OriginAccessVPC, OriginAccessPublic},
+						Default: OriginAccessVPC, Directive: true},
+					// Not caching by default. Managed-CachingOptimized keys the cache on
+					// the URL alone, so an authenticated response cached under one
+					// user's URL is served to the next — a security default has to be
+					// the safe value, and one click changes it. A cache policy also
+					// carries the TTLs, which is why there is no separate TTL field:
+					// CloudFront refuses default_ttl alongside a policy.
+					{Key: ParamCachePolicy, Label: "Cache policy", Type: FieldSelect,
+						Options: []string{
+							"Managed-CachingDisabled",
+							"Managed-CachingOptimized",
+							"Managed-CachingOptimizedForUncompressedObjects",
+						},
+						Default: "Managed-CachingDisabled", Directive: true},
+					// The maintenance state, gated so it appears only where it means
+					// anything. While it is on the distribution fetches from the
+					// placeholder, which is what makes the VPC origin editable — and
+					// what the warning on the node is for.
+					{Key: ParamDetachVPCOrigin, Label: "Detach VPC origin (for edits)", Type: FieldBoolean,
+						Default: false, Directive: true, Advanced: true,
+						RequiresParam: ParamOriginAccess, RequiresValue: OriginAccessVPC},
 					{Key: "viewer_protocol_policy", Block: "default_cache_behavior", Label: "Viewer protocol policy", Type: FieldSelect, Options: []string{"redirect-to-https", "https-only", "allow-all"}, Default: "redirect-to-https"},
-					{Key: "default_ttl", Block: "default_cache_behavior", Label: "Default TTL (s)", Type: FieldNumber, Default: 3600, Advanced: true},
 				},
 			},
 		},
@@ -417,6 +474,7 @@ func amiLookups() []Companion {
 	for _, p := range amiPresets {
 		c := Companion{
 			Suffix: "ami", Data: true,
+			Note:          "resolves its image here, so the id is right for the account's region",
 			RequiresParam: ParamAMIOS, RequiresValue: p.Label,
 			ParentRef: "ami",
 		}

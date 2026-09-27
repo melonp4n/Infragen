@@ -24,6 +24,9 @@ import (
 // direction: the port the user drew is the port the origin is fetched on, and a
 // port invented here would contradict the chart — opening one port on the asset
 // and talking to another.
+// Origin.RequiresParam is not checked here. What an origin must have turned on
+// first depends on how the edge reaches it — a VPC origin needs no address at
+// all — so each adapter raises it on the paths where it is true.
 type origin interface {
 	wire(edge, from Endpoint, rules []model.Rule) wiring
 	// unwired is the same edge with nothing drawn behind it. CloudFront cannot
@@ -152,11 +155,6 @@ func resolveOrigin(edge, from Endpoint, rules, reverse []model.Rule) wiring {
 		return wiring{reason: fmt.Sprintf("%s cannot be a CDN origin — nothing there answers an HTTP request",
 			from.Asset.Name)}
 	}
-	o := from.Type.Origin
-	if !catalog.GateOpen(o.RequiresParam, "", from.Asset.Params) {
-		return wiring{reason: fmt.Sprintf("%s is not reachable as an origin yet — turn on %q on it",
-			from.Asset.Name, paramLabel(from.Type, o.RequiresParam))}
-	}
 	// The direction a rule was written in decides nothing about which end is which
 	// — that is settled by whichever connector was clicked first. So a rule in the
 	// other list is a misplaced rule, and saying so is the whole job here: the
@@ -237,9 +235,10 @@ func connRefA(s model.Session, connID string) model.NodeRef {
 func sameRef(a, b model.NodeRef) bool { return a.Key() == b.Key() }
 
 // originExpr is the hostname an edge fetches from, for the clouds whose edge
-// takes a name.
-func originExpr(from Endpoint) string {
-	return expand(from.Type.Origin.Expr, exprCtx{
+// takes a name. The expression is passed in because one type has two of them:
+// the public name and the private one.
+func originExpr(from Endpoint, expr string) string {
+	return expand(expr, exprCtx{
 		accountID: from.Account.ID,
 		assetID:   from.Asset.ID,
 		params:    from.Asset.Params,

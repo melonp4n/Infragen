@@ -23,7 +23,7 @@ what makes a revert possible without re-deriving the mapping from provider schem
 | `versioning_enabled` | `aws_s3_bucket` | provider v4 split versioning out | `aws_s3_bucket_versioning` companion resource |
 | `cpu` | `aws_ecs_service` | task-definition argument | `aws_ecs_task_definition.cpu` companion |
 | `memory` | `aws_ecs_service` | task-definition argument | `aws_ecs_task_definition.memory` companion |
-| `default_ttl` | `aws_cloudfront_distribution` | nested | `default_cache_behavior { default_ttl }` |
+| `default_ttl` | `aws_cloudfront_distribution` | nested | `default_cache_behavior { default_ttl }`, since removed — a cache policy carries the TTLs and CloudFront refuses both |
 | `viewer_protocol_policy` | `aws_cloudfront_distribution` | nested | `default_cache_behavior { viewer_protocol_policy }` |
 
 ## Azure

@@ -7,6 +7,7 @@ package tofu
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"infrachart/internal/catalog"
@@ -192,9 +193,11 @@ func originWarnings(s model.Session, origins map[string]wiring) []Warning {
 	// line rather than only naming it.
 	conn := map[string]string{}
 	connected := map[string]bool{}
+	drawn := map[string][]model.Rule{}
 	for _, p := range originPairs(s) {
 		connected[p.edge.Asset.ID] = true
 		conn[p.edge.Asset.ID] = p.connID
+		drawn[p.edge.Asset.ID] = p.rules
 	}
 	for _, acc := range s.Accounts {
 		for _, a := range acc.Assets {
@@ -211,6 +214,28 @@ func originWarnings(s model.Session, origins map[string]wiring) []Warning {
 				out = append(out, errorAbout(w,
 					"%s has nothing drawn behind it, so it fetches from a placeholder — connect it to the asset it fronts",
 					a.Name))
+			}
+			// A detached distribution fetches from the placeholder, so the chart
+			// says one thing and the configuration does another — which is the
+			// definition of an error here, even though the state is deliberate.
+			// Left on by accident it is a CDN serving origin.example.com.
+			if detached(Endpoint{Account: &acc, Asset: &a, Type: rt}) {
+				out = append(out, errorAbout(w,
+					"%s is detached from its VPC origin, so it fetches from a placeholder — apply this, make the change, then turn %q off",
+					a.Name, paramLabel(rt, catalog.ParamDetachVPCOrigin)))
+			}
+			// The ports the distribution fetches on and the ports the line opens are
+			// two different facts, and this is the only thing that keeps them in
+			// step. Under match-viewer CloudFront uses both, so an origin reachable
+			// on 443 and nothing else fails every plaintext request while the chart
+			// and the generated file both look correct.
+			if origins[a.ID].reason == "" && connected[a.ID] {
+				for _, port := range originPortsUnpermitted(
+					Endpoint{Account: &acc, Asset: &a, Type: rt}, drawn[a.ID]) {
+					out = append(out, errorAbout(w,
+						"%s fetches its origin on %s, and the line permits no rule for that port — add one, or change the origin port",
+						a.Name, port))
+				}
 			}
 			// The proxy this emits speaks HTTP, so 443 would serve plaintext on the
 			// port everything assumes is TLS.
@@ -294,4 +319,37 @@ func accountSettingWarnings(s model.Session) []Warning {
 		}
 	}
 	return out
+}
+
+// originPortsUnpermitted lists the ports this edge will connect on that no rule
+// in the origin-fetch direction allows.
+//
+// Only AWS separates the two: GCP's backend port is still the one drawn on the
+// line, so an edge whose adapter names no ports has nothing to disagree about.
+func originPortsUnpermitted(edge Endpoint, rules []model.Rule) []string {
+	if edge.Account == nil || edge.Account.Provider != "aws" {
+		return nil
+	}
+	var out []string
+	for _, port := range originPortsUsed(edge) {
+		n, err := strconv.Atoi(port)
+		if err != nil {
+			// A blank or unparseable port is caught where it is set, not here.
+			continue
+		}
+		if !permits(rules, n) {
+			out = append(out, port)
+		}
+	}
+	return out
+}
+
+func permits(rules []model.Rule, port int) bool {
+	for _, r := range rules {
+		lo, hi, any := r.Ports()
+		if any || (port >= lo && port <= hi) {
+			return true
+		}
+	}
+	return false
 }
